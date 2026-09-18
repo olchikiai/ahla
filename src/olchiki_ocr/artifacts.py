@@ -39,6 +39,7 @@ from .errors import ModelArtifactError, ModelDownloadError
 
 __all__ = [
     "DEFAULT_RELEASE_HOST",
+    "MODEL_TAG_PREFIX",
     "DOWNLOAD_TIMEOUT_SECONDS",
     "CACHE_ENV_VAR",
     "ONNX_FILENAME",
@@ -57,6 +58,14 @@ __all__ = [
 #: ``olchikiai/ahla`` repository. It can be overridden via ``model_source`` /
 #: ``InferenceConfig.model_source`` when serving from a mirror.
 DEFAULT_RELEASE_HOST = "https://github.com/olchikiai/ahla/releases/download"
+
+#: Release-tag scheme for the Model_Artifact. The model is published under
+#: its OWN GitHub release tag (decoupled from the package version, Req 14.3):
+#: ``model-v<model_version>``. GitHub release-asset URLs require this tag
+#: segment between ``/releases/download/`` and the asset filename, so the
+#: full archive URL is
+#: ``<host>/releases/download/model-v<model_version>/<asset>``.
+MODEL_TAG_PREFIX = "model-v"
 
 #: Maximum seconds a download may run before it is treated as a failure
 #: (Req 4.8; proposed default, confirmable).
@@ -106,9 +115,25 @@ def _archive_name(model_version: str) -> str:
     return f"olchiki-ocr-model-{model_version}.tar.gz"
 
 
+def _model_release_tag(model_version: str) -> str:
+    """Return the model's GitHub release tag (Design Decision D3, Req 14.3).
+
+    The Model_Artifact is published under its OWN release tag,
+    ``model-v<model_version>``, decoupled from the package version so the model
+    can be re-released without bumping the package.
+    """
+    return f"{MODEL_TAG_PREFIX}{model_version}"
+
+
 def _artifact_url(release_host: str, model_version: str) -> str:
-    """Return the archive download URL under ``release_host`` (Design D3)."""
-    return f"{release_host.rstrip('/')}/{_archive_name(model_version)}"
+    """Return the archive download URL under ``release_host`` (Design D3).
+
+    GitHub release-asset URLs are
+    ``<host>/releases/download/<tag>/<asset>``; the model is published under
+    its own tag ``model-v<model_version>`` (decoupled from Package_Version).
+    """
+    tag = _model_release_tag(model_version)
+    return f"{release_host.rstrip('/')}/{tag}/{_archive_name(model_version)}"
 
 
 def resolve_cache_dir(model_version: str, cache_dir: str | None) -> str:
@@ -271,7 +296,10 @@ def _download_and_verify(
 
     Downloads the versioned archive
     ``olchiki-ocr-model-<model_version>.tar.gz`` from the ``Release_Host``
-    (``model_source`` or :data:`DEFAULT_RELEASE_HOST`) into a temp location with
+    (``model_source`` or :data:`DEFAULT_RELEASE_HOST`), under the model's own
+    release tag ``model-v<model_version>`` (so the URL is
+    ``<host>/releases/download/model-v<model_version>/<asset>``), into a temp
+    location with
     a :data:`DOWNLOAD_TIMEOUT_SECONDS` timeout, fetches the companion
     ``.sha256``, verifies the archive's streamed SHA-256 against the published
     digest, safely extracts it into a temp staging dir (rejecting path-traversal
