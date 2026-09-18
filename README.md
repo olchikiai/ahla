@@ -108,16 +108,18 @@ go to different tags (see above).
 **1. Package release** (wheel + sdist under `v<version>`):
 
 ```bash
-# from the olchiki-ocr project root
-./scripts/release.sh 0.1.0            # bash (Git Bash / Linux / macOS)
-#  or, on Windows PowerShell:
-#  .\scripts\release.ps1 -Version 0.1.0
+# from the olchiki-ocr project root (bash: Git Bash / Linux / macOS)
+./scripts/release.sh 0.1.0
 ```
 
 This cleans `dist/`, builds the wheel + sdist, runs `twine check`, and
 creates the `v<version>` GitHub release with both artifacts attached. It can
 also run automatically in CI: pushing a `v*` tag triggers
 `.github/workflows/release.yml`, which builds and attaches the artifacts.
+
+On Windows, an equivalent PowerShell script (`scripts/release.ps1 -Version 0.1.0`)
+is kept as a local convenience but is not tracked in the repository (it is
+git-ignored); `release.sh` is the canonical release script.
 
 **2. Model release** (model artifact under `model-v<version>`):
 
