@@ -10,11 +10,35 @@ torch-free and EasyOCR-free: only ONNX Runtime (CPU), numpy, and Pillow.
 
 ## Install
 
+> Published via **GitHub Releases** (PyPI publication planned for a future
+> release). Dependencies (`onnxruntime`, `numpy`, `Pillow`) are resolved from
+> PyPI as usual — only the `olchiki-ocr` wheel itself is hosted on GitHub.
+
+Install the prebuilt wheel from the latest release:
+
 ```bash
-pip install olchiki-ocr
+pip install https://github.com/olchikiai/ahla/releases/download/v0.1.0/olchiki_ocr-0.1.0-py3-none-any.whl
 ```
 
-Optional extras:
+Or let pip discover the right wheel from the Releases page:
+
+```bash
+pip install --find-links https://github.com/olchikiai/ahla/releases olchiki-ocr
+```
+
+Install from source (builds locally; requires git):
+
+```bash
+pip install git+https://github.com/olchikiai/ahla.git@v0.1.0
+```
+
+Once published to PyPI, the standard form will also work:
+
+```bash
+pip install olchiki-ocr   # planned
+```
+
+### Optional extras
 
 | Extra       | Adds                                   | For                                  |
 |-------------|----------------------------------------|--------------------------------------|
@@ -23,11 +47,10 @@ Optional extras:
 | `[train]`   | `torch`, `lmdb`, `fonttools`, `numpy`  | Fine-tuning (DTRB via pinned git clone) |
 | `[export]`  | `torch`, `onnx`                        | `.pth` -> ONNX -> INT8 export        |
 
+Append the extra to the install target, e.g. from a release wheel:
+
 ```bash
-pip install "olchiki-ocr[gpu]"
-pip install "olchiki-ocr[cv]"
-pip install "olchiki-ocr[train]"
-pip install "olchiki-ocr[export]"
+pip install "olchiki-ocr[gpu] @ https://github.com/olchikiai/ahla/releases/download/v0.1.0/olchiki_ocr-0.1.0-py3-none-any.whl"
 ```
 
 Notes:
