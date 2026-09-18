@@ -78,11 +78,71 @@ CLI:
 olchiki-ocr word.png
 ```
 
-## Versions
+## Versions and release tags
 
 The **Package_Version** (this distribution's `pyproject.toml` `version`) is
-distinct from the **Model_Version**, which is recorded in the downloaded model
-artifact's `provenance.json` -- not in `pyproject.toml`.
+distinct from the **Model_Version**, which is recorded in the downloaded
+model artifact's `provenance.json` — not in `pyproject.toml`. They are
+versioned and released independently.
+
+The package and the model are published under **separate GitHub release
+tags** on `olchikiai/ahla`:
+
+| Tag              | Contains                                              | Consumed by                     |
+|------------------|-------------------------------------------------------|---------------------------------|
+| `v<version>`     | the `olchiki-ocr` wheel + sdist                       | `pip install`                   |
+| `model-v<version>` | the model artifact (`olchiki-ocr-model-<version>.tar.gz` + `.sha256`) | `ModelRecognizer.from_pretrained()` at first use |
+
+So `v0.1.0` holds the installable package, and `model-v0.1.0` holds the
+model weights. On first use, `from_pretrained()` downloads the model archive
+from the `model-v<version>` release, verifies its SHA-256, and caches it
+under `~/.cache/olchiki-ocr/<model_version>/` (override with the
+`OLCHIKI_OCR_CACHE` environment variable, or pass `model_source=` to load
+from a mirror, or `path=` to load a local artifact directory offline).
+
+## Releasing (maintainers)
+
+Publishing a release is two independent steps — the package and the model
+go to different tags (see above).
+
+**1. Package release** (wheel + sdist under `v<version>`):
+
+```bash
+# from the olchiki-ocr project root
+./scripts/release.sh 0.1.0            # bash (Git Bash / Linux / macOS)
+#  or, on Windows PowerShell:
+#  .\scripts\release.ps1 -Version 0.1.0
+```
+
+This cleans `dist/`, builds the wheel + sdist, runs `twine check`, and
+creates the `v<version>` GitHub release with both artifacts attached. It can
+also run automatically in CI: pushing a `v*` tag triggers
+`.github/workflows/release.yml`, which builds and attaches the artifacts.
+
+**2. Model release** (model artifact under `model-v<version>`):
+
+```bash
+gh release create model-v0.1.0 \
+  output/release/olchiki-ocr-model-0.1.0.tar.gz \
+  output/release/olchiki-ocr-model-0.1.0.tar.gz.sha256 \
+  --repo olchikiai/ahla \
+  --title "olchiki-ocr model 0.1.0" \
+  --notes "Model artifact for olchiki-ocr 0.1.0"
+```
+
+The model archive + its `.sha256` are produced by the export tooling and are
+**not** committed to the repository (they are large binaries distributed via
+the release). `from_pretrained()` will not work until the `model-v<version>`
+release exists with these two assets.
+
+**Verify the full round-trip** in a clean environment (dependencies resolved
+from public PyPI):
+
+```bash
+pip install --index-url https://pypi.org/simple/ \
+  https://github.com/olchikiai/ahla/releases/download/v0.1.0/olchiki_ocr-0.1.0-py3-none-any.whl
+python -c "from olchiki_ocr import ModelRecognizer; ModelRecognizer.from_pretrained(); print('ok')"
+```
 
 ## Licensing
 
