@@ -1,0 +1,85 @@
+olchiki-ocr
+===========
+
+This distribution ships a validated Ol Chiki (Santali) text-recognition model
+and reuses third-party software, fonts, and data. This NOTICE provides the
+required attributions and documents the license split between the packaging
+code and the published model artifacts.
+
+
+License split (Req 5.3, 5.5)
+----------------------------
+The PACKAGING CODE in this distribution (the `olchiki_ocr` import package and
+its build/packaging files) is licensed under the MIT License. See LICENSE.
+
+The PUBLISHED MODEL ARTIFACTS -- the trainable Base_Weights (`.pth` checkpoint)
+and the servable ONNX_Model (`model.onnx`, including its INT8-quantized form)
+distributed as the downloadable Model_Artifact -- are licensed under the
+Apache License, Version 2.0. See LICENSE-MODEL. Apache-2.0 is chosen to match
+the DTRB / EasyOCR upstream lineage (and to carry Apache-2.0's explicit patent
+grant).
+
+In short: MIT for the code, Apache-2.0 for the weights and ONNX model. The two
+licenses are independent; installing the code (MIT) and using the downloaded
+weights (Apache-2.0) are covered by their respective terms.
+
+
+Attributions
+============
+
+1. EasyOCR (JaidedAI)
+---------------------
+The recognition model's lineage traces to the EasyOCR "gen2" recognition
+architecture. EasyOCR is NOT a runtime dependency of the `olchiki-ocr` core
+(the core runs on ONNX Runtime), but the model heritage and gen2 architecture
+influence are attributed here.
+
+    EasyOCR
+    Copyright (c) Jaided AI (https://github.com/JaidedAI/EasyOCR)
+    Licensed under the Apache License, Version 2.0.
+    http://www.apache.org/licenses/LICENSE-2.0
+
+
+2. deep-text-recognition-benchmark (DTRB / clovaai)
+---------------------------------------------------
+The recognition model uses the DTRB `None-VGG-BiLSTM-CTC` architecture and was
+trained/fine-tuned with the clovaai deep-text-recognition-benchmark training
+scripts. DTRB is not pip-installable; the `[train]` tier obtains it via a
+pinned external git clone at commit
+`e2117f2fb882b3c6085030500a260c113be27a63`.
+
+    deep-text-recognition-benchmark
+    Copyright (c) 2019-present NAVER Corp. (https://github.com/clovaai/deep-text-recognition-benchmark)
+    Licensed under the Apache License, Version 2.0.
+    http://www.apache.org/licenses/LICENSE-2.0
+
+
+3. Noto Sans Ol Chiki fonts
+---------------------------
+The model's weights were produced from synthetic training images rendered with
+the Noto Sans Ol Chiki font family (Regular, Bold, Medium, SemiBold), part of
+the Google Noto Fonts project.
+
+    Noto Sans Ol Chiki
+    Part of the Google Noto Fonts project.
+    Licensed under the SIL Open Font License, Version 1.1.
+    https://openfontlicense.org
+    https://github.com/notofonts/noto-fonts
+
+
+4. AI4Bharat IndicCorp corpus
+-----------------------------
+The Ol Chiki text corpus used to build the training word list and render the
+synthetic samples was sourced from the AI4Bharat IndicCorp dataset
+(Santali / `sat.txt`).
+
+    AI4Bharat IndicCorp (v2), Santali
+    Source: https://huggingface.co/datasets/ai4bharat/IndicCorpV2
+    Attribution to the AI4Bharat IndicCorp project; refer to the dataset's
+    published terms for its license.
+
+
+If the exact license or version of any font or corpus source cannot be verified
+from this repository, the attribution above is provided in good faith and
+should be reconciled against each component's upstream terms before
+redistribution.
