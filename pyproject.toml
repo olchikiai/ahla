@@ -1,4 +1,4 @@
-# Build metadata for the `olchiki-ocr` distribution.
+# olchiki-ocr build metadata.
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
@@ -6,20 +6,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "olchiki-ocr"
-# Package_Version -- the version of the `olchiki-ocr` DISTRIBUTION. This is
-# deliberately DISTINCT and independent from the Model_Version, which is
-# recorded in the Model_Artifact's provenance.json, NOT here.
+# Package version, independent of the model version (recorded in provenance.json).
 version = "0.1.0"
 description = "Ol Chiki (Santali) OCR: recognize Ol Chiki text from word or line images with an ONNX Runtime core (torch-free), plus optional GPU, OpenCV, training, and export tiers."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.9"
-# Packaging CODE is MIT. The published model WEIGHTS / ONNX_Model are
-# licensed Apache-2.0 -- that split is documented in the NOTICE and
-# LICENSE-MODEL files (shipped via `[tool.setuptools] license-files` below) and
-# in the README. `[project].license` reflects the CODE license only (MIT). The
-# legacy table form is retained for compatibility with setuptools>=68; the
-# MIT-code / Apache-2.0-weights split is made explicit and unambiguous by the
-# accompanying LICENSE, LICENSE-MODEL, and NOTICE files.
+# Code is MIT; the model weights/ONNX are Apache-2.0 (see LICENSE-MODEL, NOTICE).
 license = { text = "MIT" }
 authors = [{ name = "olchiki-ocr maintainers" }, { name = "olchikiai" }]
 keywords = ["ocr", "ol-chiki", "santali", "onnx", "ctc", "text-recognition"]
@@ -38,45 +30,32 @@ classifiers = [
     "Natural Language :: Other",
 ]
 
-# --- Core tier: a bare `pip install olchiki-ocr` is torch-free.
-# CPU ONNX Runtime IS the inference engine and belongs in the core.
+# Core deps (torch-free): ONNX Runtime is the inference engine.
 dependencies = [
     "onnxruntime>=1.16",
     "numpy>=1.24",
     "Pillow>=10.0",
 ]
 
-# --- Optional extras.
 [project.optional-dependencies]
-# GPU inference: swap CPU ORT for the CUDA build.
 gpu = [
     "onnxruntime-gpu>=1.16",
 ]
-# Advanced preprocessing steps -- deskew/threshold/denoise.
 cv = [
     "opencv-python>=4.8",
 ]
-# Fine-tune tier. NOTE: DTRB (clovaai/deep-text-recognition-benchmark)
-# is NOT a pip dependency -- it is obtained via a pinned external git clone at
-# commit e2117f2fb882b3c6085030500a260c113be27a63 that the trainer shells out to.
-# `fonttools` is required by the synthetic-data generator for glyph/cmap
-# detection (`fontTools.ttLib.TTFont`); Pillow (`ImageFont`/`ImageDraw`) is
-# already provided by the core.
+# DTRB is not a pip dep; it's a pinned external git clone the trainer shells out to.
 train = [
     "torch>=2.0",
     "lmdb>=1.4",
     "fonttools>=4.40",
     "numpy>=1.24",
 ]
-# Export tier: torch + onnx ONLY. MUST stay independent of
-# [train] -- no lmdb and no DTRB clone. `onnxruntime` (from the core) supplies
-# the INT8 quantization tooling.
 export = [
     "torch>=2.0",
     "onnx>=1.15",
 ]
 
-# --- Console-script entry point.
 [project.scripts]
 olchiki-ocr = "olchiki_ocr.cli:main"
 
@@ -84,27 +63,14 @@ olchiki-ocr = "olchiki_ocr.cli:main"
 Homepage = "https://github.com/olchikiai/ahla"
 Repository = "https://github.com/olchikiai/ahla"
 
-# --- src-layout package discovery. `package-dir` resolves `src/` relative to
-# this manifest's location (the self-contained project dir owns ./src).
 [tool.setuptools]
 package-dir = { "" = "src" }
-# --- License / attribution files shipped in the sdist and wheel metadata.
-# LICENSE = MIT (packaging code); LICENSE-MODEL = Apache-2.0
-# (published Base_Weights + ONNX_Model); NOTICE = attribution for EasyOCR,
-# DTRB/clovaai, Noto Sans Ol Chiki, and AI4Bharat IndicCorp, plus the explicit
-# MIT-code / Apache-2.0-weights split. These live alongside this manifest (the
-# same directory setuptools resolves `readme = README.md` from) and are packaged
-# into the distribution's metadata via `license-files` (setuptools>=68).
 license-files = ["LICENSE", "LICENSE-MODEL", "NOTICE"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["olchiki_ocr*"]
 
-# --- Packaged data: the default Ol Chiki word list under
-# olchiki_ocr/data/ and, later, the servable model artifact.
+# Ship the default Ol Chiki word list; the model weights download at runtime.
 [tool.setuptools.package-data]
-# The default Ol Chiki word list ships under olchiki_ocr/data/. The 33MB model
-# weights are NOT shipped in the wheel (they are downloaded at runtime), so the
-# stale `_model/**` entry has been removed.
 olchiki_ocr = ["data/**"]
