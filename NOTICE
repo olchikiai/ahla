@@ -16,8 +16,9 @@ The PUBLISHED MODEL ARTIFACTS -- the trainable Base_Weights (`.pth` checkpoint)
 and the servable ONNX_Model (`model.onnx`, including its INT8-quantized form)
 distributed as the downloadable Model_Artifact -- are licensed under the
 Apache License, Version 2.0. See LICENSE-MODEL. Apache-2.0 is chosen to match
-the DTRB / EasyOCR upstream lineage (and to carry Apache-2.0's explicit patent
-grant).
+the model's upstream lineage -- the DTRB training framework and the EasyOCR
+gen2 architecture/weight heritage, both Apache-2.0 -- and to carry Apache-2.0's
+explicit patent grant.
 
 In short: MIT for the code, Apache-2.0 for the weights and ONNX model. The two
 licenses are independent; installing the code (MIT) and using the downloaded
@@ -29,10 +30,14 @@ Attributions
 
 1. EasyOCR (JaidedAI)
 ---------------------
-The recognition model's lineage traces to the EasyOCR "gen2" recognition
-architecture. EasyOCR is NOT a runtime dependency of the `olchiki-ocr` core
-(the core runs on ONNX Runtime), but the model heritage and gen2 architecture
-influence are attributed here.
+EasyOCR is NOT used by `olchiki-ocr` in any form: it is not a runtime
+dependency (the core runs on ONNX Runtime), not a training dependency (the
+`[train]` tier uses the DTRB scripts directly), and not an export dependency
+(the `[export]` tier vendors its own model definition). It is attributed
+here because the trained model's heritage -- the pretrained starting weights
+and the "gen2" `None-VGG-BiLSTM-CTC` recognition architecture -- traces to
+the EasyOCR ecosystem. This attribution is preserved to honor that lineage
+and the Apache-2.0 terms of the upstream weights/architecture.
 
     EasyOCR
     Copyright (c) Jaided AI (https://github.com/JaidedAI/EasyOCR)

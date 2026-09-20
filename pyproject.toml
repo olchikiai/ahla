@@ -28,7 +28,7 @@ requires-python = ">=3.9"
 # MIT-code / Apache-2.0-weights split is made explicit and unambiguous by the
 # accompanying LICENSE, LICENSE-MODEL, and NOTICE files.
 license = { text = "MIT" }
-authors = [{ name = "olchiki-ocr maintainers" }]
+authors = [{ name = "olchiki-ocr maintainers" }, { name = "olchikiai" }]
 keywords = ["ocr", "ol-chiki", "santali", "onnx", "ctc", "text-recognition"]
 classifiers = [
     "Development Status :: 3 - Alpha",
