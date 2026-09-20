@@ -1,12 +1,14 @@
 # olchiki-ocr
 
-Ol Chiki (Santali) OCR: recognize pre-cropped word/line images with an ONNX
-Runtime core (torch-free), plus optional GPU, OpenCV, training, and export
-tiers.
+Ol Chiki (Santali) OCR: recognize Ol Chiki text from word or line images —
+for example, crops from a scanned page or photo — with an ONNX Runtime core
+(torch-free), plus optional GPU, OpenCV, training, and export tiers.
 
-The core recognizes pre-cropped word/line images using a validated DTRB
-`None-VGG-BiLSTM-CTC` model executed with ONNX Runtime. A bare install is
-torch-free and EasyOCR-free: only ONNX Runtime (CPU), numpy, and Pillow.
+The recognizer reads a single word or line of Ol Chiki text from an image
+using a validated DTRB `None-VGG-BiLSTM-CTC` model executed with ONNX
+Runtime. It is a text recognizer, not a page detector: feed it a cropped
+word/line region (segment the page first if you are starting from a full
+scan).
 
 ## Install
 
