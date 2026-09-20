@@ -161,3 +161,16 @@ This project uses a deliberate license split:
 
 See [NOTICE](NOTICE) for full attribution (EasyOCR / JaidedAI, DTRB / clovaai,
 Noto Sans Ol Chiki fonts, and the AI4Bharat IndicCorp corpus).
+
+### Data provenance
+
+The model was trained on synthetic images rendered from the **AI4Bharat
+IndicCorp** Santali corpus, and the bundled default lexicon
+(`olchiki_ocr/data/lexicon.txt`) is a filtered word list derived from that
+corpus. IndicCorp is governed by AI4Bharat's own published terms — not by this
+project's MIT (code) or Apache-2.0 (model) licenses — and those terms may
+restrict commercial use or redistribution of the data. The training fonts
+(Noto Sans Ol Chiki) are under the SIL Open Font License. If you plan to
+redistribute the bundled word list or deploy the model where the data terms
+matter, verify the upstream corpus terms first. See [NOTICE](NOTICE) for
+details.

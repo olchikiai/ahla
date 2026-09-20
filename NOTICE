@@ -24,6 +24,17 @@ In short: MIT for the code, Apache-2.0 for the weights and ONNX model. The two
 licenses are independent; installing the code (MIT) and using the downloaded
 weights (Apache-2.0) are covered by their respective terms.
 
+Training data and bundled lexicon. The model was trained on synthetic images
+whose text derives from the AI4Bharat IndicCorp corpus, and the package ships
+a default word list (`olchiki_ocr/data/lexicon.txt`) filtered from that same
+corpus. The IndicCorp corpus is governed by AI4Bharat's own published terms,
+NOT by this project's MIT or Apache-2.0 licenses. Those upstream terms apply
+to the corpus and to the corpus-derived word list independently of the code
+(MIT) and model (Apache-2.0) licenses; consult IndicCorp's terms before
+redistributing the word list or using the model in ways its data terms may
+restrict. The MIT and Apache-2.0 licenses here cover this project's own code
+and trained artifacts, and do not purport to relicense any third-party data.
+
 
 Attributions
 ============
@@ -63,7 +74,9 @@ pinned external git clone at commit
 ---------------------------
 The model's weights were produced from synthetic training images rendered with
 the Noto Sans Ol Chiki font family (Regular, Bold, Medium, SemiBold), part of
-the Google Noto Fonts project.
+the Google Noto Fonts project. The fonts were used only to render training
+images; the SIL Open Font License governs the font files themselves (this
+project does not redistribute the font files under its own license).
 
     Noto Sans Ol Chiki
     Part of the Google Noto Fonts project.
@@ -76,7 +89,14 @@ the Google Noto Fonts project.
 -----------------------------
 The Ol Chiki text corpus used to build the training word list and render the
 synthetic samples was sourced from the AI4Bharat IndicCorp dataset
-(Santali / `sat.txt`).
+(Santali / `sat.txt`). The shipped default lexicon
+(`olchiki_ocr/data/lexicon.txt`) is a filtered word list derived from this
+corpus. IndicCorp is distributed under AI4Bharat's own terms (which are not a
+standard OSI open-source license and may restrict commercial use or
+redistribution); those terms — not this project's MIT/Apache-2.0 licenses —
+govern the corpus and the corpus-derived word list. Its exact terms were not
+independently verified in this repository; consult the dataset's published
+terms before relying on or redistributing this data.
 
     AI4Bharat IndicCorp (v2), Santali
     Source: https://huggingface.co/datasets/ai4bharat/IndicCorpV2
