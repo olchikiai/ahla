@@ -1,11 +1,4 @@
-# Build metadata for the `olchiki-ocr` DISTRIBUTION.
-#
-# This manifest lives in the self-contained project directory
-# `<repo-root>/olchiki-ocr/`, which owns its own sources under a normal
-# `src/olchiki_ocr/` src-layout. A standard isolated
-# `python -m build olchiki-ocr` produces both a wheel and an sdist directly
-# from this directory. The repository root `pyproject.toml` is a separate,
-# unrelated distribution and is not this package's manifest.
+# Build metadata for the `olchiki-ocr` distribution.
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
@@ -15,13 +8,13 @@ build-backend = "setuptools.build_meta"
 name = "olchiki-ocr"
 # Package_Version -- the version of the `olchiki-ocr` DISTRIBUTION. This is
 # deliberately DISTINCT and independent from the Model_Version, which is
-# recorded in the Model_Artifact's provenance.json, NOT here (Req 14.3).
+# recorded in the Model_Artifact's provenance.json, NOT here.
 version = "0.1.0"
-description = "Ol Chiki (Santali) OCR: recognize pre-cropped word/line images with an ONNX Runtime core (torch-free), plus optional GPU, OpenCV, training, and export tiers."
+description = "Ol Chiki (Santali) OCR: recognize Ol Chiki text from word or line images with an ONNX Runtime core (torch-free), plus optional GPU, OpenCV, training, and export tiers."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.9"
-# Packaging CODE is MIT (Req 5.5). The published model WEIGHTS / ONNX_Model are
-# licensed Apache-2.0 (Req 5.3) -- that split is documented in the NOTICE and
+# Packaging CODE is MIT. The published model WEIGHTS / ONNX_Model are
+# licensed Apache-2.0 -- that split is documented in the NOTICE and
 # LICENSE-MODEL files (shipped via `[tool.setuptools] license-files` below) and
 # in the README. `[project].license` reflects the CODE license only (MIT). The
 # legacy table form is retained for compatibility with setuptools>=68; the
@@ -45,7 +38,7 @@ classifiers = [
     "Natural Language :: Other",
 ]
 
-# --- Core_Tier (Req 3.1): a bare `pip install olchiki-ocr` is torch-free.
+# --- Core tier: a bare `pip install olchiki-ocr` is torch-free.
 # CPU ONNX Runtime IS the inference engine and belongs in the core.
 dependencies = [
     "onnxruntime>=1.16",
@@ -53,17 +46,17 @@ dependencies = [
     "Pillow>=10.0",
 ]
 
-# --- Optional extras (Req 3.3-3.6, 14.2).
+# --- Optional extras.
 [project.optional-dependencies]
-# GPU inference (Req 3.3): swap CPU ORT for the CUDA build.
+# GPU inference: swap CPU ORT for the CUDA build.
 gpu = [
     "onnxruntime-gpu>=1.16",
 ]
-# Advanced preprocessing steps -- deskew/threshold/denoise (Req 3.4).
+# Advanced preprocessing steps -- deskew/threshold/denoise.
 cv = [
     "opencv-python>=4.8",
 ]
-# Fine-tune tier (Req 3.5). NOTE: DTRB (clovaai/deep-text-recognition-benchmark)
+# Fine-tune tier. NOTE: DTRB (clovaai/deep-text-recognition-benchmark)
 # is NOT a pip dependency -- it is obtained via a pinned external git clone at
 # commit e2117f2fb882b3c6085030500a260c113be27a63 that the trainer shells out to.
 # `fonttools` is required by the synthetic-data generator for glyph/cmap
@@ -75,7 +68,7 @@ train = [
     "fonttools>=4.40",
     "numpy>=1.24",
 ]
-# Export tier (Req 3.6, Design D1): torch + onnx ONLY. MUST stay independent of
+# Export tier: torch + onnx ONLY. MUST stay independent of
 # [train] -- no lmdb and no DTRB clone. `onnxruntime` (from the core) supplies
 # the INT8 quantization tooling.
 export = [
@@ -83,8 +76,7 @@ export = [
     "onnx>=1.15",
 ]
 
-# --- Console-script entry point (Req 1.8). `main` is wired in Task 13.1;
-# declaring the entry point now is fine.
+# --- Console-script entry point.
 [project.scripts]
 olchiki-ocr = "olchiki_ocr.cli:main"
 
@@ -96,8 +88,8 @@ Repository = "https://github.com/olchikiai/ahla"
 # this manifest's location (the self-contained project dir owns ./src).
 [tool.setuptools]
 package-dir = { "" = "src" }
-# --- License / attribution files shipped in the sdist and wheel metadata
-# (Req 5.3, 5.4, 5.5). LICENSE = MIT (packaging code); LICENSE-MODEL = Apache-2.0
+# --- License / attribution files shipped in the sdist and wheel metadata.
+# LICENSE = MIT (packaging code); LICENSE-MODEL = Apache-2.0
 # (published Base_Weights + ONNX_Model); NOTICE = attribution for EasyOCR,
 # DTRB/clovaai, Noto Sans Ol Chiki, and AI4Bharat IndicCorp, plus the explicit
 # MIT-code / Apache-2.0-weights split. These live alongside this manifest (the
@@ -109,7 +101,7 @@ license-files = ["LICENSE", "LICENSE-MODEL", "NOTICE"]
 where = ["src"]
 include = ["olchiki_ocr*"]
 
-# --- Packaged data (Req 8.6): the default Ol Chiki word list under
+# --- Packaged data: the default Ol Chiki word list under
 # olchiki_ocr/data/ and, later, the servable model artifact.
 [tool.setuptools.package-data]
 # The default Ol Chiki word list ships under olchiki_ocr/data/. The 33MB model

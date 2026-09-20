@@ -127,8 +127,8 @@ git-ignored); `release.sh` is the canonical release script.
 
 ```bash
 gh release create model-v0.1.0 \
-  output/release/olchiki-ocr-model-0.1.0.tar.gz \
-  output/release/olchiki-ocr-model-0.1.0.tar.gz.sha256 \
+  <path-to>/olchiki-ocr-model-0.1.0.tar.gz \
+  <path-to>/olchiki-ocr-model-0.1.0.tar.gz.sha256 \
   --repo olchikiai/ahla \
   --title "olchiki-ocr model 0.1.0" \
   --notes "Model artifact for olchiki-ocr 0.1.0"

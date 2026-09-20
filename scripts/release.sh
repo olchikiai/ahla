@@ -76,5 +76,5 @@ echo "        --repo $REPO \\"
 echo "        --title \"olchiki-ocr model $VERSION\" \\"
 echo "        --notes \"Model artifact for olchiki-ocr $VERSION\""
 echo
-echo "    (The model .tar.gz + .sha256 are produced under output/release/ by the"
-echo "     export/build tooling; they are not committed to this repo.)"
+echo "    (The model .tar.gz + .sha256 are produced by your export/build"
+echo "     tooling; they are not committed to this repo.)"
