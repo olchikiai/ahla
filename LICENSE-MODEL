@@ -17,12 +17,12 @@ for full attribution (EasyOCR, DTRB/clovaai, Noto Sans Ol Chiki, AI4Bharat
 IndicCorp).
 
 Scope note on training data. This Apache-2.0 grant covers the model artifacts
-(weights and ONNX model) as distributed by this project. It does NOT relicense
-or grant rights to the third-party training data used to produce the model:
-the text corpus (AI4Bharat IndicCorp) and the corpus-derived word list remain
-subject to AI4Bharat's own published terms, and the training fonts remain
-under the SIL Open Font License. See NOTICE. Use of the model in contexts that
-the underlying data terms restrict is the user's responsibility to verify.
+(weights and ONNX model) as distributed by this project. The training text
+corpus (AI4Bharat IndicCorp) is released under CC0 (public-domain dedication)
+and imposes no restrictions on use or redistribution of the corpus or the
+corpus-derived word list. The training fonts (Noto Sans Ol Chiki) remain under
+the SIL Open Font License, which governs the font files themselves (not the
+model). See NOTICE for attribution.
 
                                  Apache License
                            Version 2.0, January 2004

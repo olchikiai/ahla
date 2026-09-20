@@ -27,13 +27,11 @@ weights (Apache-2.0) are covered by their respective terms.
 Training data and bundled lexicon. The model was trained on synthetic images
 whose text derives from the AI4Bharat IndicCorp corpus, and the package ships
 a default word list (`olchiki_ocr/data/lexicon.txt`) filtered from that same
-corpus. The IndicCorp corpus is governed by AI4Bharat's own published terms,
-NOT by this project's MIT or Apache-2.0 licenses. Those upstream terms apply
-to the corpus and to the corpus-derived word list independently of the code
-(MIT) and model (Apache-2.0) licenses; consult IndicCorp's terms before
-redistributing the word list or using the model in ways its data terms may
-restrict. The MIT and Apache-2.0 licenses here cover this project's own code
-and trained artifacts, and do not purport to relicense any third-party data.
+corpus. IndicCorpV2 is released by AI4Bharat under CC0 (a public-domain
+dedication), which places no restrictions on use or redistribution — so the
+corpus-derived word list may be used and redistributed freely, including
+commercially. The attribution below is provided as a courtesy and for
+provenance; CC0 does not require it.
 
 
 Attributions
@@ -91,17 +89,16 @@ The Ol Chiki text corpus used to build the training word list and render the
 synthetic samples was sourced from the AI4Bharat IndicCorp dataset
 (Santali / `sat.txt`). The shipped default lexicon
 (`olchiki_ocr/data/lexicon.txt`) is a filtered word list derived from this
-corpus. IndicCorp is distributed under AI4Bharat's own terms (which are not a
-standard OSI open-source license and may restrict commercial use or
-redistribution); those terms — not this project's MIT/Apache-2.0 licenses —
-govern the corpus and the corpus-derived word list. Its exact terms were not
-independently verified in this repository; consult the dataset's published
-terms before relying on or redistributing this data.
+corpus. IndicCorpV2 is released under CC0 (public-domain dedication): it may
+be used, modified, and redistributed without restriction, and no attribution
+is required. AI4Bharat is credited here as a courtesy. (As with any
+web-crawled corpus, AI4Bharat's CC0 dedication waives their own rights in the
+compiled dataset; it does not purport to grant rights in any underlying
+third-party source text.)
 
     AI4Bharat IndicCorp (v2), Santali
     Source: https://huggingface.co/datasets/ai4bharat/IndicCorpV2
-    Attribution to the AI4Bharat IndicCorp project; refer to the dataset's
-    published terms for its license.
+    Released under CC0 1.0 (public-domain dedication).
 
 
 If the exact license or version of any font or corpus source cannot be verified
