@@ -25,3 +25,5 @@ Thumbs.db
 
 # PowerShell scripts kept as a local backup (release.sh is the tracked release script)
 *.ps1
+
+release-steps.md
