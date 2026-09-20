@@ -1,24 +1,9 @@
 """Typed exception hierarchy for the ``olchiki_ocr`` package.
 
-This module defines the fatal-error exception hierarchy used across the
-package. It provides the typed error classes plus
-:class:`ModelDownloadError`.
-
-The base class :class:`OcrTrainerError` retains its name for exit-code
-stability and by Design Decision D6.
-Although the name mentions "trainer", it is now the **general package error
-base** for the whole ``olchiki_ocr`` package (core inference, download/cache,
-export, and training tiers alike) — not a trainer-only base.
-
-Each custom exception carries the offending identifier (a parameter name, a
-character, a filesystem path, a device string, a URL + cache path, or captured
-subprocess output) so error messages are actionable. Each also exposes a
-distinct ``exit_code`` so a top-level handler can catch these, print the
-message to stderr, and return the corresponding non-zero process exit code.
-
-This module is intentionally pure-stdlib (only ``__future__`` typing): importing
-it never pulls in torch, onnxruntime, numpy, Pillow, or easyocr, which is what
-lets ``__init__.py`` import the typed errors eagerly.
+Pure stdlib, so importing it pulls in no heavy deps and ``__init__.py`` can
+import the typed errors eagerly. The base :class:`OcrTrainerError` carries an
+``exit_code``; each subclass has a distinct fixed code and carries the
+offending identifier for actionable messages.
 """
 
 from __future__ import annotations
@@ -42,11 +27,8 @@ __all__ = [
 class OcrTrainerError(Exception):
     """Base class for all fatal ``olchiki_ocr`` errors.
 
-    The name is retained for exit-code/compatibility parity with the
-    carried-over hierarchy (Design Decision D6); it is now the general package
-    error base, not trainer-only. Subclasses set a distinct ``exit_code`` that a
-    top-level handler returns as the process exit code when the error propagates
-    to the top level.
+    Subclasses set a distinct ``exit_code`` that a top-level handler returns as
+    the process exit code.
     """
 
     #: Default non-zero exit code; overridden by subclasses.
@@ -54,11 +36,7 @@ class OcrTrainerError(Exception):
 
 
 class ConfigError(OcrTrainerError):
-    """Raised when a Configuration parameter is invalid.
-
-    Carries the name of the offending setting so the message names the invalid
-    parameter.
-    """
+    """Raised when a configuration parameter is invalid."""
 
     exit_code: int = 2
 
@@ -72,11 +50,7 @@ class ConfigError(OcrTrainerError):
 
 
 class CharsetError(OcrTrainerError):
-    """Raised when a Charset input is invalid.
-
-    Carries the offending value (e.g. an extra character that is not a single
-    Unicode code point) so the message identifies it.
-    """
+    """Raised when a charset input is invalid."""
 
     exit_code: int = 3
 
@@ -87,10 +61,7 @@ class CharsetError(OcrTrainerError):
 
 
 class IngestError(OcrTrainerError):
-    """Raised when an input path (such as the Word_List) cannot be read.
-
-    Carries the missing/offending path so the message identifies it.
-    """
+    """Raised when an input path cannot be read."""
 
     exit_code: int = 4
 
@@ -101,10 +72,7 @@ class IngestError(OcrTrainerError):
 
 
 class FontError(OcrTrainerError):
-    """Raised when a Font_File cannot be loaded.
-
-    Carries the offending font path so the message identifies it.
-    """
+    """Raised when a font file cannot be loaded."""
 
     exit_code: int = 5
 
@@ -115,10 +83,7 @@ class FontError(OcrTrainerError):
 
 
 class PretrainedModelError(OcrTrainerError):
-    """Raised when the pretrained model to fine-tune cannot be loaded.
-
-    Carries the offending model path so the message identifies it.
-    """
+    """Raised when the pretrained model to fine-tune cannot be loaded."""
 
     exit_code: int = 6
 
@@ -129,10 +94,7 @@ class PretrainedModelError(OcrTrainerError):
 
 
 class DeviceError(OcrTrainerError):
-    """Raised when the requested Compute_Device is unavailable.
-
-    Carries the offending device string so the message identifies it.
-    """
+    """Raised when the requested compute device is unavailable."""
 
     exit_code: int = 7
 
@@ -143,10 +105,7 @@ class DeviceError(OcrTrainerError):
 
 
 class DtrbError(OcrTrainerError):
-    """Raised when a shelled-out DTRB subprocess exits non-zero.
-
-    Carries the captured subprocess ``stderr`` so the failure is diagnosable.
-    """
+    """Raised when a shelled-out DTRB subprocess exits non-zero."""
 
     exit_code: int = 8
 
@@ -157,10 +116,7 @@ class DtrbError(OcrTrainerError):
 
 
 class OutputError(OcrTrainerError):
-    """Raised when an output artifact cannot be written.
-
-    Carries the offending path so the message identifies it.
-    """
+    """Raised when an output artifact cannot be written."""
 
     exit_code: int = 9
 
@@ -171,10 +127,7 @@ class OutputError(OcrTrainerError):
 
 
 class ImageError(OcrTrainerError):
-    """Raised when an input image for inference cannot be read/decoded.
-
-    Carries the offending image path so the message identifies it (Req 1.7).
-    """
+    """Raised when an input image for inference cannot be read/decoded."""
 
     exit_code: int = 10
 
@@ -185,11 +138,7 @@ class ImageError(OcrTrainerError):
 
 
 class ModelArtifactError(OcrTrainerError):
-    """Raised when the Model_Artifact cannot be produced or loaded.
-
-    Carries the offending artifact path (or mismatched dimension) so the
-    message identifies it (Req 2.6, 2.7, 8.4).
-    """
+    """Raised when the ONNX artifact is missing or malformed."""
 
     exit_code: int = 11
 
@@ -200,12 +149,9 @@ class ModelArtifactError(OcrTrainerError):
 
 
 class ModelDownloadError(OcrTrainerError):
-    """Raised when a Model_Artifact download fails or fails verification.
+    """Raised when a model download fails or fails SHA-256 verification.
 
-    Raised on a network error, HTTP error, timeout, missing artifact, or a
-    payload whose SHA-256 does not match the published checksum. Carries both
-    the ``url`` that was fetched and the ``cache_path`` it was destined for so
-    the message names both (Req 4.4, 4.8, 12.2, 12.5).
+    Carries both the fetched ``url`` and the destination ``cache_path``.
     """
 
     exit_code: int = 12

@@ -1,51 +1,16 @@
-"""Pipeline orchestration for the ``[train]`` tier (Req 10).
+"""Pipeline orchestration for the ``[train]`` tier.
 
-This module exposes three public entry points, each a module-level
-``(cfg) -> int`` that catches the fatal
-:class:`~olchiki_ocr.errors.OcrTrainerError` family at the top level, prints the
-descriptive message to stderr, and returns the error's ``exit_code`` (or ``0``
-on success):
+Exposes three ``(cfg) -> int`` entry points that catch the fatal
+``OcrTrainerError`` family, print it to stderr, and return its ``exit_code``:
+:func:`run` (full pipeline), :func:`run_data_prep`, and :func:`run_training`.
 
-* :func:`run` -- the all-in-one pipeline: validate, generate, partition, build
-  LMDBs, train, evaluate, and write the Run_Report in a single process.
-* :func:`run_data_prep` -- ONLY the data-preparation phase.
-* :func:`run_training` -- ONLY the training/finalization phase.
+The data-prep and training phases can run as separate processes; they decouple
+through a persisted ``val_manifest.txt`` (both must use the same
+``cfg.output_dir`` and matching Config, data-prep first).
 
-Migration note (ONNX redesign)
-------------------------------
-In the previous EasyOCR-coupled package the training/finalization phase also
-wrote an EasyOCR-loadable Model_Artifact and evaluated the Validation_Set by
-running that artifact through the EasyOCR inferencer. In the ONNX redesign the
-``_train`` tier's job ends at producing the trained Base_Weights ``.pth``
-(Req 10.4): the EasyOCR artifact writer and the EasyOCR inferencer are gone
-(Module Migration Plan: ``artifact.py`` dropped, ``inferencer.py`` deleted).
-Conversion to a servable ONNX model belongs to the ``[export]`` tier (Task 16),
-and full-validation-set accuracy scoring against the baseline belongs to the
-ONNX Full_Validation_Harness (Task 17), which reuses :mod:`.evaluator`.
-
-Accordingly, :func:`_train_and_finalize` trains (producing the ``.pth``), records
-the selected checkpoint path in ``stats``, and writes the Run_Report. It does not
-write an EasyOCR artifact and does not run inference-based validation-set
-evaluation (there is no torch-free inference path in ``_train``). The reusable
-:mod:`.evaluator` is still available to the harness for ONNX-path scoring.
-
-Phase decoupling via a persisted validation manifest
-----------------------------------------------------
-:func:`run_data_prep` and :func:`run_training` are designed to run as SEPARATE
-PROCESSES; they are decoupled through a small ``val_manifest.txt`` on disk that
-data-prep writes and training reads. Both phases must be run against the SAME
-``cfg.output_dir`` (and matching Config), and data-prep must run before training.
-
-Stage order:
-
-    validate_config
-      -> build Charset            (charset.build_charset)
-      -> select Compute_Device    (device.select_device)  [torch, D9]
-      -> DATA-PREP phase          (_prepare_data)          -> train/ + val/ LMDB
-      -> TRAIN/FINALIZE phase     (_train_and_finalize)    -> Base_Weights .pth + Run_Report
-
-The Charset is built before generation because it defines the label alphabet and
-the network's output-class count. Device selection is resolved early and recorded.
+Finalization produces the Base_Weights ``.pth``. There is no EasyOCR artifact
+and no inference-based validation-set eval here — that moved to the ONNX harness
+(which reuses :mod:`.evaluator`).
 """
 
 from __future__ import annotations
@@ -64,24 +29,16 @@ from .trainer import train
 
 __all__ = ["run", "run_data_prep", "run_training"]
 
-# Sub-directory names under ``cfg.output_dir`` for the per-partition LMDB datasets.
+# Per-partition LMDB subdirs under ``cfg.output_dir``.
 _TRAIN_LMDB_SUBDIR = "lmdb/train"
 _VAL_LMDB_SUBDIR = "lmdb/val"
 
-# File name (under ``cfg.output_dir``) of the persisted Validation_Set manifest
-# that decouples the data-prep and training phases when run as separate
-# processes. Data-prep writes it; training reads it back.
+# Persisted Validation_Set manifest that decouples the two phases.
 _VAL_MANIFEST_SUBDIR = "val_manifest.txt"
 
 
 def run(cfg: Config) -> int:
-    """Run the full fine-tuning pipeline for ``cfg`` and return the exit code.
-
-    Returns ``0`` on success. Catches the fatal ``OcrTrainerError`` family at the
-    top level, prints the descriptive message to stderr, and returns the error's
-    distinct non-zero ``exit_code`` (incl. ``DtrbError`` on a non-zero DTRB exit,
-    Req 10.6).
-    """
+    """Run the full pipeline; return 0, or the error's exit_code on failure."""
     try:
         _run(cfg)
     except OcrTrainerError as exc:
@@ -91,13 +48,8 @@ def run(cfg: Config) -> int:
 
 
 def run_data_prep(cfg: Config) -> int:
-    """Run ONLY the data-preparation phase for ``cfg`` and return the exit code.
-
-    Validates the Configuration, generates the synthetic Dataset, partitions it,
-    builds the per-partition train/val LMDB datasets, and persists the
-    Validation_Set to ``val_manifest.txt`` under ``cfg.output_dir``. Does NOT
-    train or write the Run_Report.
-    """
+    """Run ONLY the data-prep phase (generate, partition, build LMDBs, persist
+    the val manifest); return 0 or the error's exit_code."""
     try:
         _run_data_prep(cfg)
     except OcrTrainerError as exc:
@@ -107,14 +59,8 @@ def run_data_prep(cfg: Config) -> int:
 
 
 def run_training(cfg: Config) -> int:
-    """Run ONLY the training/finalization phase for ``cfg`` and return the exit code.
-
-    Validates the Configuration, reconstructs the train/val LMDB paths produced
-    by a prior :func:`run_data_prep` run, reads the persisted Validation_Set back
-    from ``val_manifest.txt``, then fine-tunes and writes the Run_Report. Must be
-    run against the same ``cfg.output_dir`` (and matching Config) as the data-prep
-    phase, and only after it.
-    """
+    """Run ONLY the training/finalization phase (reads the persisted val
+    manifest from a prior data-prep run); return 0 or the error's exit_code."""
     try:
         _run_training(cfg)
     except OcrTrainerError as exc:
@@ -127,29 +73,19 @@ def run_training(cfg: Config) -> int:
 
 
 def _init_run(cfg: Config) -> tuple[RunStats, "object", str]:
-    """Run the shared preamble common to every ``run*`` entry point.
+    """Shared preamble: validate, build the Charset, and select the device.
 
-      1. Validate the Configuration before any Sample is produced.
-      2. Own a fresh :class:`RunStats` accumulator and snapshot the applied
-         Configuration for the Run_Report.
-      3. Build the recognition Charset and record its snapshot.
-      4. Resolve the Compute_Device early and record it; raises DeviceError when
-         CUDA is requested but unavailable.
-
-    Returns ``(stats, charset, device)``.
+    Returns ``(stats, charset, device)``. Raises DeviceError when CUDA is
+    requested but unavailable.
     """
-    # 1. Validate before any Sample is produced.
     validate_config(cfg)
 
-    # 2. RunStats accumulator + applied-Config snapshot.
     stats = RunStats()
     stats.config_snapshot = _config_snapshot(cfg)
 
-    # 3. Build the recognition Charset and record its snapshot.
     charset = build_charset(cfg.extra_characters)
     stats.charset_snapshot = charset.snapshot()
 
-    # 4. Resolve the Compute_Device early and record it (torch-based, D9).
     device = select_device(cfg.device)
     stats.compute_device = device
 
@@ -157,24 +93,19 @@ def _init_run(cfg: Config) -> tuple[RunStats, "object", str]:
 
 
 def _run(cfg: Config) -> None:
-    """Execute the full pipeline stages in order; may raise ``OcrTrainerError``."""
+    """Execute the full pipeline in order; may raise ``OcrTrainerError``."""
     stats, charset, device = _init_run(cfg)
-
-    # DATA-PREP phase: generate + partition + build the per-partition LMDBs.
     train_lmdb, val_lmdb, validation = _prepare_data(cfg, charset, device, stats)
-
-    # TRAIN/FINALIZE phase: fine-tune (produce Base_Weights .pth) + Run_Report.
     _train_and_finalize(cfg, charset, device, train_lmdb, val_lmdb, validation, stats)
 
 
 def _run_data_prep(cfg: Config) -> None:
-    """Execute ONLY the data-preparation phase; may raise ``OcrTrainerError``."""
+    """Execute ONLY the data-prep phase; may raise ``OcrTrainerError``."""
     stats, charset, device = _init_run(cfg)
 
     _train_lmdb, _val_lmdb, validation = _prepare_data(cfg, charset, device, stats)
 
-    # Persist the Validation_Set so a later, separate run_training process can
-    # read it back.
+    # Persist the Validation_Set for a later run_training process.
     _write_val_manifest(cfg, validation)
 
 
@@ -182,7 +113,7 @@ def _run_training(cfg: Config) -> None:
     """Execute ONLY the training/finalization phase; may raise ``OcrTrainerError``."""
     stats, charset, device = _init_run(cfg)
 
-    # Reconstruct the per-partition LMDB paths exactly as _prepare_data derives them.
+    # Reconstruct the per-partition LMDB paths as _prepare_data derives them.
     train_lmdb = os.path.join(cfg.output_dir, _TRAIN_LMDB_SUBDIR)
     val_lmdb = os.path.join(cfg.output_dir, _VAL_LMDB_SUBDIR)
 
@@ -199,12 +130,8 @@ def _run_training(cfg: Config) -> None:
 
 
 def _write_val_manifest(cfg: Config, validation: list[Sample]) -> None:
-    """Persist the Validation_Set to ``val_manifest.txt`` under ``cfg.output_dir``.
-
-    Writes one line per Sample as ``image_path<TAB>label``, UTF-8 encoded. The
-    parent directory is created if needed. Counterpart of
-    :func:`_read_val_manifest`.
-    """
+    """Write the Validation_Set to ``val_manifest.txt`` as UTF-8
+    ``image_path<TAB>label`` lines. Counterpart of :func:`_read_val_manifest`."""
     manifest_path = os.path.join(cfg.output_dir, _VAL_MANIFEST_SUBDIR)
     os.makedirs(os.path.dirname(manifest_path) or ".", exist_ok=True)
     with open(manifest_path, "w", encoding="utf-8", newline="\n") as handle:
@@ -213,15 +140,8 @@ def _write_val_manifest(cfg: Config, validation: list[Sample]) -> None:
 
 
 def _read_val_manifest(cfg: Config) -> list[Sample]:
-    """Read the Validation_Set back from ``val_manifest.txt`` under ``cfg.output_dir``.
-
-    Returns a list of :class:`~olchiki_ocr._train.synthgen.Sample` with
-    ``font_path=""`` (irrelevant to evaluation).
-
-    Raises:
-        OutputError: When the manifest file does not exist, naming the missing
-            path and instructing the caller to run data preparation first.
-    """
+    """Read the Validation_Set back from ``val_manifest.txt`` (Samples get
+    ``font_path=""``). Raises OutputError when the manifest is missing."""
     manifest_path = os.path.join(cfg.output_dir, _VAL_MANIFEST_SUBDIR)
     if not os.path.isfile(manifest_path):
         raise OutputError(
@@ -240,28 +160,21 @@ def _read_val_manifest(cfg: Config) -> list[Sample]:
 
 
 def _prepare_data(cfg: Config, charset, device, stats) -> tuple[str, str, list[Sample]]:
-    """Run the DATA-PREPARATION phase: synthetic generation + LMDB building.
+    """DATA-PREP phase: generate, partition, and build the per-partition LMDBs.
 
-    Produces the per-partition train and validation LMDB datasets that DTRB
-    training consumes, and mutates ``stats`` in place with the partition counts
-    and empty-Validation_Set flag.
-
-    Returns ``(train_lmdb, val_lmdb, validation)`` where the first two are the
-    absolute LMDB directory paths under ``cfg.output_dir`` and ``validation`` is
-    the Validation_Set Sample list.
+    Mutates ``stats`` with the partition counts and returns
+    ``(train_lmdb, val_lmdb, validation)``.
     """
-    # Generate the synthetic Dataset from the Word_List.
     samples = synthgen.generate(cfg, charset, stats)
 
-    # Partition the Dataset into Training_Set / Validation_Set with a seeded shuffle.
+    # Seeded, reproducible train/val split.
     seed = cfg.seed if cfg.seed is not None else 0
     training, validation = partition.partition(samples, cfg.val_fraction, seed)
     stats.training_count = len(training)
     stats.validation_count = len(validation)
     stats.empty_validation_set = len(validation) == 0
 
-    # Convert each partition into its own LMDB dataset via DTRB
-    # create_lmdb_dataset.py. Raises DtrbError (carrying stderr) on a non-zero exit.
+    # Build each partition's LMDB via DTRB (raises DtrbError on non-zero exit).
     synthetic_dir = os.path.join(cfg.output_dir, synthgen._WORK_SUBDIR)
     gt_file = os.path.join(synthetic_dir, synthgen._GT_FILENAME)
     train_lmdb = os.path.join(cfg.output_dir, _TRAIN_LMDB_SUBDIR)
@@ -282,55 +195,34 @@ def _train_and_finalize(
     validation: list[Sample],
     stats,
 ) -> None:
-    """Run the TRAINING/FINALIZATION phase: train (produce .pth), then report.
+    """TRAIN/FINALIZE phase: fine-tune (produce the Base_Weights .pth), then
+    write the Run_Report.
 
-    Consumes the train/val LMDB datasets produced by the data-prep phase and
-    fine-tunes the recognizer, producing the trained Base_Weights ``.pth``
-    (Req 10.4). The selected checkpoint path is recorded in
-    ``stats.config_snapshot`` for the Run_Report.
-
-    Unlike the previous EasyOCR-coupled pipeline, this phase does NOT write an
-    EasyOCR artifact and does NOT run inference-based Validation_Set evaluation:
-    conversion to a servable ONNX model is the ``[export]`` tier's job (Task 16),
-    and full-validation-set accuracy scoring is the ONNX harness's job (Task 17),
-    which reuses :mod:`.evaluator`. The Validation_Set is recorded for provenance
-    and yields the empty-set metrics via :mod:`.evaluator` so the Run_Report
-    still records a well-defined (0.0) baseline.
+    No EasyOCR artifact and no inference-based validation-set eval here — that
+    moved to the ONNX harness. The empty-set metrics are recorded so the report
+    has a well-defined (0.0) baseline.
     """
-    # Transfer-learn the recognizer via DTRB train.py. Parses per-interval
-    # CER/Word_Accuracy into stats.per_interval_metrics and returns the selected
-    # Fine_Tuned_Model checkpoint (the trained Base_Weights .pth, Req 10.4).
-    # Raises PretrainedModelError (unloadable --saved_model) or DtrbError (Req 10.6).
+    # Fine-tune via DTRB train.py; returns the selected Base_Weights .pth. Raises
+    # PretrainedModelError (unloadable --saved_model) or DtrbError.
     checkpoint_path = train(cfg, charset, train_lmdb, val_lmdb, device, stats)
 
-    # Record where the trained Base_Weights .pth was written for provenance /
-    # the export bridge (Task 16 consumes this .pth).
+    # Record the .pth path for provenance / the export bridge.
     stats.config_snapshot = {
         **stats.config_snapshot,
         "base_weights_checkpoint": checkpoint_path,
     }
 
-    # Record the final metrics from what we can compute without a torch-free
-    # inference path: an inference-based evaluation over the Validation_Set is
-    # deferred to the ONNX harness (Task 17), which reuses evaluator.evaluate.
-    # Here we record the well-defined empty-input baseline so the Run_Report has
-    # deterministic final metrics rather than fabricating scores.
+    # Record the empty-input baseline; real scoring is the ONNX harness's job.
     val_result = evaluator.evaluate([], [])
     stats.final_cer = val_result.cer
     stats.final_word_accuracy = val_result.word_accuracy
 
-    # Write the single UTF-8 Run_Report recording the applied Config, counts,
-    # skipped labels, device, and metrics. Raises OutputError when it cannot be
-    # written.
+    # Write the Run_Report (raises OutputError when it cannot be written).
     runreport.write(cfg, stats)
 
 
 def _config_snapshot(cfg: Config) -> dict:
-    """Return a snapshot of every applied Config value.
-
-    Built explicitly (rather than introspected) so the recorded provenance is
-    deterministic and independent of dataclass internals.
-    """
+    """Return a snapshot of every applied Config value (built explicitly)."""
     return {
         "word_list_path": cfg.word_list_path,
         "font_paths": cfg.font_paths,

@@ -1,54 +1,13 @@
 """Primary public API: :class:`ModelRecognizer` and :class:`Prediction`.
 
-This module wires the core inference tier together (design: Components ->
-``ModelRecognizer``; Req 1, 2, 13). It implements the two public entry points
-described in the design's ``from_pretrained`` resolution flow and ``predict``
-flow diagrams:
+``from_pretrained`` resolves an artifact dir, builds the ONNX session, runs the
+provenance integrity check, and stores what ``predict`` needs. ``predict`` runs
+the per-image pipeline: preprocess -> ONNX run -> CTC decode -> ``str`` (or a
+:class:`Prediction` with confidence when ``confidence=True``).
 
-* :meth:`ModelRecognizer.from_pretrained` resolves a Model_Artifact directory
-  (:func:`olchiki_ocr.artifacts.resolve`), constructs an
-  :class:`~olchiki_ocr.session.OnnxSession` over the bundled ``model.onnx``
-  (which validates ONNX geometry -- rank 4, class dim 49 -- and raises
-  ``ModelArtifactError``/``DeviceError`` as appropriate; Req 2.6, 2.7, 13.3),
-  runs the provenance integrity check
-  (:func:`olchiki_ocr.provenance.load_and_verify`, enforcing
-  provenance/charset/geometry agreement; Req 8.4), and stores what
-  :meth:`predict` needs.
-
-* :meth:`ModelRecognizer.predict` runs the per-image pipeline: preprocess
-  (:class:`~olchiki_ocr.preprocessing.Preprocessing_Pipeline`, raising
-  ``ImageError`` on an unreadable image; Req 1.7) -> ONNX ``run`` -> CTC decode
-  (:class:`~olchiki_ocr.decoders.GreedyDecoder` by default, or
-  :class:`~olchiki_ocr.decoders.BeamSearchDecoder` when ``decoder="beam"``) ->
-  return a bare ``str`` (Req 1.3) or a :class:`Prediction` with a confidence in
-  ``[0, 1]`` when ``confidence=True`` (Req 1.4).
-
-Session eager-vs-lazy (design reconciliation): the design's ``from_pretrained``
-diagram runs the provenance integrity check *at resolution time*, and that check
-needs the validated ONNX geometry that ``OnnxSession`` produces at construction.
-The design also has a "session lazily created" nice-to-have note, but making the
-session lazy would either skip the up-front integrity check or force a second
-ONNX load inside ``load_and_verify``. Correctness of the integrity check takes
-precedence, so this implementation constructs the ``OnnxSession`` eagerly in
-``from_pretrained`` (matching the resolution-flow diagram) and reuses that one
-session in ``predict``. ``OnnxSession`` construction is a cheap metadata/geometry
-load, so construction stays inexpensive.
-
-MODEL_VERSION handling: ``artifacts.resolve`` needs a ``model_version`` *before*
-provenance is loaded, because the cache directory is named
-``~/.cache/olchiki-ocr/<model_version>/``. We therefore define a module-level
-:data:`DEFAULT_MODEL_VERSION` constant -- the default servable Model_Version,
-read from the bundled model's ``provenance.json`` (``"0.1.0"``, model
-``ol_chiki_g2``) -- and pass it to ``resolve``. For a ``path=`` load the
-``model_version`` is irrelevant to the result (the local directory is used
-verbatim and no cache path is computed), so the constant only affects cache-dir
-naming for the download/cache path. The value is confirmable and can be updated
-when a new servable model version is published.
-
-Import hygiene: this module imports ``onnxruntime`` only *indirectly* via
-:mod:`olchiki_ocr.session` (the core inference engine -- expected and correct).
-It never imports torch, easyocr, or cv2. numpy arrives transitively through the
-session/preprocessing/decoder modules.
+The session is built eagerly in ``from_pretrained`` because the provenance
+integrity check needs the geometry ``OnnxSession`` validates at construction;
+the single session is reused in ``predict``.
 """
 
 from __future__ import annotations
@@ -71,50 +30,26 @@ if TYPE_CHECKING:  # typing-only; avoids any runtime import cost/cycle
 
 __all__ = ["ModelRecognizer", "Prediction"]
 
-#: The default servable Model_Version, read from the bundled model's
-#: ``provenance.json`` (model ``ol_chiki_g2``). ``artifacts.resolve`` needs a
-#: model_version to name the cache directory
-#: (``~/.cache/olchiki-ocr/<model_version>/``) *before* provenance is loaded, so
-#: it cannot come from the provenance record itself. For a ``path=`` load this
-#: value is irrelevant (the local dir is used verbatim, no cache path is
-#: computed); for the download/cache path it names the versioned artifact +
-#: cache subdir. Confirmable -- bump when a new servable model is published.
+#: Default servable model version. Needed to name the cache dir
+#: (``~/.cache/olchiki-ocr/<version>/``) before provenance is loaded, so it
+#: can't come from provenance itself. Irrelevant for a ``path=`` load. Bump when
+#: a new servable model ships.
 DEFAULT_MODEL_VERSION = "0.1.0"
 
-#: Valid decoder names accepted by ``from_pretrained``/``predict`` (Req 1.5,
-#: 7.1). "greedy" is the package default; "beam" is opt-in.
+#: Accepted decoder names; "greedy" is the default, "beam" is opt-in.
 _VALID_DECODERS = frozenset({"greedy", "beam"})
 
 
 @dataclass(frozen=True)
 class Prediction:
-    """Structured recognition result (design: Data Models -> ``Prediction``).
-
-    Attributes:
-        text: The recognized text (Req 1.3).
-        confidence: The recognition confidence in ``[0, 1]``, or ``None`` when
-            not requested. Greedy confidence is the mean per-timestep max
-            softmax over emitted timesteps; beam confidence is the winning
-            path's length-normalized probability (Design Decision D2, Req 1.4).
-    """
+    """Structured recognition result: text plus optional confidence in ``[0, 1]``."""
 
     text: str
     confidence: float | None = None
 
 
 def _validate_decoder(name: str) -> str:
-    """Return ``name`` if it is a recognized decoder, else raise ``ConfigError``.
-
-    Args:
-        name: The requested decoder name.
-
-    Returns:
-        The validated decoder name.
-
-    Raises:
-        ConfigError: If ``name`` is not ``"greedy"`` or ``"beam"``; the message
-            names the offending value (Req 1.5, 12.5).
-    """
+    """Return ``name`` if a recognized decoder, else raise ``ConfigError``."""
     if name not in _VALID_DECODERS:
         raise ConfigError(
             "decoder",
@@ -142,16 +77,7 @@ class ModelRecognizer:
     ) -> None:
         """Store the resolved collaborators (usually built by ``from_pretrained``).
 
-        Args:
-            session: A constructed, geometry-validated ``OnnxSession``.
-            charset: The recognition :class:`~olchiki_ocr.charset.Charset`.
-            default_decoder: The default decoder name (``"greedy"`` or
-                ``"beam"``); validated here.
-            provenance_record: The verified provenance, retained for
-                introspection (optional).
-
-        Raises:
-            ConfigError: If ``default_decoder`` is not a recognized decoder.
+        Raises ``ConfigError`` if ``default_decoder`` is not recognized.
         """
         self._session = session
         self._charset = charset
@@ -192,46 +118,17 @@ class ModelRecognizer:
     ) -> "ModelRecognizer":
         """Resolve, verify, and construct a ready-to-use recognizer.
 
-        Resolution/verification order (design ``from_pretrained`` flow):
+        Flow: resolve the artifact dir (local ``path`` or cache/download) ->
+        build the charset -> construct the ``OnnxSession`` (validates geometry
+        and device) -> run the provenance integrity check -> store.
 
-        1. **resolve** the artifact directory via
-           :func:`olchiki_ocr.artifacts.resolve` (``path=`` -> local, no
-           network, Req 1.6/4.7; else cache-hit reuse or download, Req 1.2/4.x),
-           passing :data:`DEFAULT_MODEL_VERSION` for cache-dir naming.
-        2. build the recognition :class:`~olchiki_ocr.charset.Charset`.
-        3. **session** -- construct an ``OnnxSession`` over
-           ``<artifact_dir>/model.onnx``. This validates ONNX geometry (input
-           rank 4, output class dim 49) and provider/device availability,
-           raising ``ModelArtifactError`` (Req 2.6, 2.7) or ``DeviceError``
-           (Req 13.3) as appropriate.
-        4. **load_and_verify** -- run
-           :func:`olchiki_ocr.provenance.load_and_verify` to enforce
-           provenance/charset/geometry agreement, raising ``ModelArtifactError``
-           on mismatch (Req 8.4).
-        5. **store** the session, charset, default decoder, and provenance in a
-           new recognizer.
+        ``device`` is ``None``/``"cpu"`` for CPU, ``"gpu"``/``"cuda"`` for GPU.
 
-        Args:
-            path: Optional local artifact directory (offline load; Req 1.6).
-            model_source: Optional ``Release_Host`` override (Req 4.2).
-            cache_dir: Optional Model_Cache override (Req 4.6).
-            device: ``None``/``"cpu"`` -> CPU; ``"gpu"``/``"cuda"`` -> GPU
-                (Req 13).
-            decoder: Default decoder for this recognizer (``"greedy"`` default,
-                ``"beam"`` opt-in; Req 7.1). Validated up front.
-
-        Returns:
-            A ready-to-use :class:`ModelRecognizer`.
-
-        Raises:
-            ConfigError: If ``decoder`` is not a recognized decoder name.
-            ModelArtifactError: On a missing/invalid artifact, bad ONNX
-                geometry, or a provenance/charset mismatch.
-            DeviceError: If a GPU device is requested but unavailable.
-            ModelDownloadError: On a download/verify failure (non-``path=``).
+        Raises ``ConfigError`` (bad decoder), ``ModelArtifactError`` (bad
+        artifact/geometry or provenance mismatch), ``DeviceError`` (GPU
+        unavailable), or ``ModelDownloadError`` (download failure).
         """
-        # Validate the requested default decoder before doing any I/O so an
-        # obvious misconfiguration fails fast (Req 1.5).
+        # Validate up front so a bad decoder fails before any I/O.
         default_decoder = _validate_decoder(decoder)
 
         # 1. Resolve the artifact directory (local path or cache/download).
@@ -272,52 +169,22 @@ class ModelRecognizer:
     ) -> "str | Prediction":
         """Recognize the text in a single pre-cropped word/line image.
 
-        Pipeline (design ``predict`` flow): preprocess the image to a
-        ``(1, 1, 32, W)`` tensor, run the ONNX session to get ``(T, 49)`` logits,
-        decode with the selected decoder, and return the text (or a
-        :class:`Prediction`).
-
-        Args:
-            image: Filesystem path to a readable image (Req 1.3).
-            confidence: When ``True``, return a :class:`Prediction` with a
-                confidence in ``[0, 1]``; when ``False`` (default), return the
-                bare recognized ``str`` (Req 1.3, 1.4).
-            decoder: Per-call decoder override (``"greedy"``/``"beam"``); when
-                ``None``, the recognizer's configured default is used, otherwise
-                the per-call value wins (Req 1.5).
-            beam_width: Beam width when the beam decoder is used (default 10;
-                validated inside :class:`BeamSearchDecoder`, Req 7.2-7.4).
-            lexicon: Optional lexicon constraining beam output (Req 7.5).
-            score_fn: Optional prefix scorer for beam ranking (Req 7.6).
-
-        Returns:
-            The recognized text as a ``str`` (``confidence=False``) or a
-            :class:`Prediction` carrying ``text`` and ``confidence``
-            (``confidence=True``).
-
-        Raises:
-            ImageError: If ``image`` cannot be read or decoded (Req 1.7). Raised
-                by the preprocessing pipeline, naming the offending path.
-            ConfigError: If ``decoder`` names an unknown decoder, or the beam
-                width is invalid.
-            ModelArtifactError: Propagated from the session on a runtime model
-                failure.
+        Preprocess to a ``(1, 1, 32, W)`` tensor, run ONNX to get ``(T, 49)``
+        logits, decode, and return the text (or a :class:`Prediction` when
+        ``confidence=True``). ``decoder`` overrides the recognizer default for
+        this call. Raises ``ImageError`` if ``image`` can't be read, or
+        ``ConfigError`` for a bad decoder/beam width.
         """
-        # Choose the decoder for this call: per-call override wins, else the
-        # recognizer default (Req 1.5).
+        # Per-call override wins over the recognizer default.
         decoder_name = _validate_decoder(decoder if decoder is not None else self._default_decoder)
 
-        # Preprocess: path -> (1, 1, 32, W) float32 tensor in [-1, 1]. A plain
-        # default pipeline reproduces the training-time preprocessing; unreadable
-        # images raise ImageError(path) here (Req 1.7).
+        # path -> (1, 1, 32, W) float32 tensor in [-1, 1]; ImageError on failure.
         tensor = Preprocessing_Pipeline().to_tensor(image)
 
-        # Run the ONNX model -> logits (T, 49).
         logits = self._session.run(tensor)
 
-        # Decode. Greedy is stateless and reused; beam is constructed per call
-        # because its configuration (width/lexicon/score_fn) is call-specific
-        # and its width is validated at construction (Req 7.4).
+        # Greedy is stateless and reused; beam is per-call since its config
+        # (width/lexicon/score_fn) is call-specific and validated at construction.
         if decoder_name == "greedy":
             text, conf = self._greedy.decode(logits, self._charset)
         else:  # "beam"

@@ -1,43 +1,9 @@
-"""ONNX-based provenance record and integrity check for the bundled model.
+"""ONNX provenance record and integrity check for the bundled model.
 
-A ``provenance.json`` file ships inside the Model_Artifact directory (alongside
-``model.onnx`` and the charset resource) and records which checkpoint, charset
-ordering, and network geometry the servable ONNX model was produced from, plus
-the Model_Version (distinct from the Package_Version in ``pyproject.toml``,
-Req 14.3).
-
-This module is the **ONNX-adapted** replacement for the carried-over
-EasyOCR-coupled ``provenance.py``. The old module read geometry/charset from an
-EasyOCR ``user_network/<model>.yaml`` sidecar; that YAML coupling is dropped
-entirely (design: Module Migration Plan -> ``provenance.py`` "Adapt"). The new
-:class:`Provenance` schema describes the ONNX model directly (design: Data
-Models -> "Provenance (new ONNX schema)"):
-
-* ``model_version`` -- the Model_Version, distinct from the Package_Version.
-* ``model_name`` -- e.g. ``"ol_chiki_g2"``.
-* ``source_checkpoint`` -- the ``.pth`` the ONNX was exported from (Req 6.4).
-* ``charset`` -- the charset ordering (the joined charset string; Req 8.4).
-* ``geometry`` -- ``input_channel``/``output_channel``/``hidden_size``/``imgH``.
-* ``onnx`` -- ``{"opset": int, "input_rank": 4, "output_classes": 49}``.
-* ``quantization`` -- ``{"format", "method", "accuracy_delta_pp"}`` (Req 11.3).
-
-Integrity check (:func:`load_and_verify`, Design Decision D8, Correctness
-Property P11; Req 2.7, 8.4, 11.3) runs at model-resolution time (called by
-``ModelRecognizer.from_pretrained`` in Task 11). It reconciles the charset size
-with the ONNX output width and confirms the recorded charset ordering matches
-the inference charset ordering, raising :class:`ModelArtifactError` (naming the
-artifact dir and the offending field/dimension) on any mismatch. See the
-:func:`load_and_verify` docstring for exactly which checks run and how the ONNX
-geometry is obtained.
-
-Import hygiene: this module is pure standard library plus the core typed-error
-and charset/CTC helpers. It MUST NOT import torch, easyocr, or onnxruntime. In
-particular it references :class:`~olchiki_ocr.session.OnnxSession` **by type
-only** (a ``TYPE_CHECKING`` import), because importing ``olchiki_ocr.session``
-pulls in onnxruntime; keeping the annotation behind ``TYPE_CHECKING`` lets
-``import olchiki_ocr.provenance`` stay importable without onnxruntime installed.
-The session parameter is duck-typed at runtime (it only needs to report the
-validated ONNX input rank and output class dimension).
+A ``provenance.json`` ships in the artifact directory recording the source
+checkpoint, charset ordering, network geometry, and model version. The session
+is referenced by type only (``TYPE_CHECKING``) so importing this module does not
+pull in onnxruntime.
 """
 
 from __future__ import annotations
@@ -63,9 +29,8 @@ __all__ = [
     "write",
 ]
 
-#: The provenance sidecar filename, resolved relative to an artifact directory.
-#: Matches ``artifacts.PROVENANCE_FILENAME``; defined here to avoid importing the
-#: (heavier) artifacts module for a single constant.
+#: Provenance sidecar filename; matches ``artifacts.PROVENANCE_FILENAME``,
+#: duplicated here to avoid importing the heavier artifacts module.
 PROVENANCE_FILENAME = "provenance.json"
 
 # Fields required in a well-formed provenance record.
@@ -82,22 +47,19 @@ _REQUIRED_FIELDS = (
 
 @dataclass(frozen=True)
 class Provenance:
-    """Recorded metadata describing the servable ONNX Model_Artifact's origin.
+    """Recorded metadata describing the servable ONNX model's origin.
 
-    Serialized as ``<artifact_dir>/provenance.json``. ``charset`` mirrors the
-    inference charset ordering (``"".join(charset.characters)``), which is what
-    yields correct CTC decoding (Req 8.4); ``geometry`` records the DTRB network
-    geometry; ``onnx`` and ``quantization`` describe the exported/quantized
-    model (Req 6.4, 11.3).
+    ``charset`` mirrors the inference charset ordering, which is what yields
+    correct CTC decoding.
     """
 
-    model_version: str  # distinct from Package_Version (Req 14.3)
+    model_version: str  # distinct from the package version
     model_name: str  # e.g. "ol_chiki_g2"
-    source_checkpoint: str  # .pth the ONNX was exported from (Req 6.4)
-    charset: str  # charset ordering (Req 8.4)
+    source_checkpoint: str  # .pth the ONNX was exported from
+    charset: str  # charset ordering
     geometry: dict  # input_channel/output_channel/hidden_size/imgH
     onnx: dict  # {"opset": int, "input_rank": 4, "output_classes": 49}
-    quantization: dict  # {"format", "method", "accuracy_delta_pp"} (Req 11.3)
+    quantization: dict  # {"format", "method", "accuracy_delta_pp"}
 
     def to_dict(self) -> dict:
         """Return the record as a plain JSON-serializable dict (stable order)."""
@@ -107,14 +69,8 @@ class Provenance:
     def from_dict(cls, data: dict, *, artifact_dir: str) -> "Provenance":
         """Build a :class:`Provenance` from a parsed dict.
 
-        Args:
-            data: The parsed ``provenance.json`` mapping.
-            artifact_dir: Directory the record came from, used only to name the
-                error on a malformed record.
-
-        Raises:
-            ModelArtifactError: Naming ``artifact_dir`` when a required field is
-                missing or the record is not a mapping.
+        Raises ``ModelArtifactError`` (naming ``artifact_dir``) when the record
+        is not a mapping or a required field is missing.
         """
         if not isinstance(data, dict):
             raise ModelArtifactError(
@@ -146,17 +102,10 @@ def _provenance_path(artifact_dir: str) -> str:
 
 
 def load(artifact_dir: str) -> Provenance:
-    """Load and parse ``<artifact_dir>/provenance.json`` into a :class:`Provenance`.
+    """Load and parse ``<artifact_dir>/provenance.json``.
 
-    Args:
-        artifact_dir: Directory holding ``provenance.json``.
-
-    Returns:
-        The parsed :class:`Provenance`.
-
-    Raises:
-        ModelArtifactError: Naming ``artifact_dir`` when the provenance file is
-            missing, unreadable, not valid JSON, or missing required fields.
+    Raises ``ModelArtifactError`` (naming ``artifact_dir``) when the file is
+    missing, unreadable, not valid JSON, or missing required fields.
     """
     path = _provenance_path(artifact_dir)
     try:
@@ -170,14 +119,7 @@ def load(artifact_dir: str) -> Provenance:
 
 
 def _output_class_dim(session: "OnnxSession") -> Any:
-    """Return the ONNX output class dimension reported by ``session``.
-
-    Duck-typed so a lightweight stub (or the real :class:`OnnxSession`) works:
-    prefer the ``output_class_dim()`` accessor, then an ``output_shape``
-    sequence's last element. The real ``OnnxSession`` (Task 6.1) already
-    validated this dimension against ``NUM_CLASSES`` at construction, so this is
-    a cross-check, not the primary enforcement.
-    """
+    """Return the ONNX output class dimension reported by ``session`` (duck-typed)."""
     accessor = getattr(session, "output_class_dim", None)
     if callable(accessor):
         return accessor()
@@ -191,11 +133,7 @@ def _output_class_dim(session: "OnnxSession") -> Any:
 
 
 def _input_rank(session: "OnnxSession") -> int:
-    """Return the ONNX input rank reported by ``session`` (duck-typed).
-
-    Prefers the ``input_rank()`` accessor, then ``len(input_shape)``. The real
-    ``OnnxSession`` validated this to be 4 at construction.
-    """
+    """Return the ONNX input rank reported by ``session`` (duck-typed)."""
     accessor = getattr(session, "input_rank", None)
     if callable(accessor):
         return int(accessor())
@@ -215,51 +153,15 @@ def load_and_verify(
 ) -> Provenance:
     """Load ``provenance.json`` and verify artifact/charset/ONNX agreement.
 
-    Runs the model-resolution-time integrity check (Design Decision D8,
-    Correctness Property P11; Req 2.7, 8.4, 11.3). It is cheap: it reads the
-    small JSON record and cross-checks a few dimensions -- it never loads weight
-    tensors.
-
-    How the ONNX geometry is obtained: the :class:`~olchiki_ocr.session.OnnxSession`
-    (Task 6.1) already validates, **at construction**, that the ONNX input rank
-    is 4 and the output class dimension equals ``NUM_CLASSES`` (49), raising
-    :class:`ModelArtifactError` otherwise. So by the time a live session exists,
-    the ONNX-side geometry is enforced. This function additionally *cross-checks*
-    those session-reported dimensions and enforces the provenance/charset
-    agreement that the session cannot know about.
-
-    Checks (each mismatch raises :class:`ModelArtifactError` naming
-    ``artifact_dir`` and the offending field/dimension):
-
-    1. ``provenance.json`` loads and parses with all required fields.
-    2. ``charset.size() == EMIT_CLASSES`` (48) and ``charset.size() + 1 ==
-       NUM_CLASSES`` (49) -- the inference charset must have exactly the emit-
-       class count the model expects (reconciles the "48 emit / 49 total"
-       wording of Req 2.7/8.4: 48 charset chars + 1 CTC blank == 49).
-    3. The ONNX output class dimension reported by ``session`` equals
-       ``NUM_CLASSES`` (49). (Enforced primarily at session construction; this
-       is a defense-in-depth cross-check that also names the dimension.)
-    4. The ONNX input rank reported by ``session`` equals 4.
-    5. The provenance-recorded charset ordering equals the inference charset
-       ordering (``provenance.charset == "".join(charset.characters)``); a
-       reordered/incompatible charset fails here (Req 8.4).
-
-    Args:
-        artifact_dir: Directory holding the resolved artifact + ``provenance.json``.
-        session: A constructed ``OnnxSession`` (or duck-typed stub) exposing the
-            validated ONNX input rank and output class dimension.
-        charset: The inference :class:`~olchiki_ocr.charset.Charset`.
-
-    Returns:
-        The verified :class:`Provenance` on success.
-
-    Raises:
-        ModelArtifactError: Naming ``artifact_dir`` and the mismatched
-            field/dimension on any failure.
+    Checks that the ONNX input rank is 4, the output class dim equals
+    ``NUM_CLASSES`` (49), the charset size is ``EMIT_CLASSES`` (48), and the
+    provenance-recorded charset ordering matches the inference charset. Any
+    mismatch raises ``ModelArtifactError`` naming ``artifact_dir`` and the
+    offending field/dimension. Returns the verified :class:`Provenance`.
     """
     prov = load(artifact_dir)
 
-    # --- 2. Charset size must be exactly the emit-class count (48). ----------
+    # Charset size must equal the emit-class count (48).
     inference_charset = charset.as_dtrb_character_arg()
     charset_size = charset.size()
     if charset_size != EMIT_CLASSES:
@@ -270,7 +172,7 @@ def load_and_verify(
             f"(NUM_CLASSES={NUM_CLASSES} = {EMIT_CLASSES} emit + 1 CTC blank)",
         )
 
-    # --- 3. ONNX output class dimension must equal NUM_CLASSES (49). ---------
+    # ONNX output class dimension must equal NUM_CLASSES (49).
     class_dim = _output_class_dim(session)
     if class_dim is not None and int(class_dim) != NUM_CLASSES:
         raise ModelArtifactError(
@@ -279,7 +181,7 @@ def load_and_verify(
             f"(= {EMIT_CLASSES} emit classes + 1 CTC blank), got {class_dim!r}",
         )
 
-    # --- 4. ONNX input rank must be 4. ---------------------------------------
+    # ONNX input rank must be 4.
     rank = _input_rank(session)
     if rank != 4:
         raise ModelArtifactError(
@@ -288,7 +190,7 @@ def load_and_verify(
             f"(batch, channel, H, W), got rank {rank}",
         )
 
-    # --- 5. Provenance charset ordering must match the inference charset. ----
+    # Provenance charset ordering must match the inference charset.
     if prov.charset != inference_charset:
         raise ModelArtifactError(
             artifact_dir,
@@ -310,29 +212,10 @@ def generate(
     quantization: dict,
     model_name: str = "ol_chiki_g2",
 ) -> Provenance:
-    """Build a :class:`Provenance` for the export tool to record (Task 16).
+    """Build a :class:`Provenance` for the export tool to record.
 
-    Records the inference charset ordering (``"".join(charset.characters)``) so
-    the generated record passes :func:`load_and_verify` against the same
-    charset. The ``onnx``/``quantization`` dicts are supplied by the export tool
-    (opset, output class count, INT8-vs-FP32 accuracy delta, etc.).
-
-    Args:
-        model_version: The Model_Version to record (Req 14.3).
-        source_checkpoint: Identifier/path of the ``.pth`` the ONNX was exported
-            from (Req 6.4).
-        charset: The inference :class:`~olchiki_ocr.charset.Charset`; its joined
-            characters are recorded as the ``charset`` ordering.
-        geometry: DTRB network geometry
-            (``input_channel``/``output_channel``/``hidden_size``/``imgH``).
-        onnx: ONNX metadata, e.g.
-            ``{"opset": 13, "input_rank": 4, "output_classes": 49}``.
-        quantization: Quantization metadata, e.g.
-            ``{"format": "int8", "method": "dynamic", "accuracy_delta_pp": 0.0}``.
-        model_name: The model name / filename stem. Defaults to ``"ol_chiki_g2"``.
-
-    Returns:
-        The generated :class:`Provenance`.
+    Records the inference charset ordering so the generated record passes
+    :func:`load_and_verify` against the same charset.
     """
     return Provenance(
         model_version=model_version,
@@ -346,22 +229,11 @@ def generate(
 
 
 def write(artifact_dir: str, provenance: Provenance) -> str:
-    """Write ``provenance`` to ``<artifact_dir>/provenance.json`` and return the path.
+    """Write ``provenance`` to ``<artifact_dir>/provenance.json``, return the path.
 
-    Serializes with UTF-8 and ``ensure_ascii=False`` (mirroring the old
-    module's write behavior) so the Ol Chiki ``charset`` is stored readably, plus
-    stable key order and a trailing newline.
-
-    Args:
-        artifact_dir: Directory to write ``provenance.json`` into.
-        provenance: The record to serialize.
-
-    Returns:
-        The path to the written ``provenance.json``.
-
-    Raises:
-        ModelArtifactError: Naming ``artifact_dir`` when the file cannot be
-            written.
+    Uses UTF-8 with ``ensure_ascii=False`` so the Ol Chiki charset stays
+    readable. Raises ``ModelArtifactError`` (naming ``artifact_dir``) on write
+    failure.
     """
     path = _provenance_path(artifact_dir)
     try:

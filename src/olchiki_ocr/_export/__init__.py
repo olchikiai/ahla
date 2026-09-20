@@ -1,24 +1,10 @@
-"""``olchiki_ocr._export`` -- the ``[export]`` tier (``.pth`` -> ONNX -> INT8).
+"""The ``[export]`` tier: ``.pth`` -> ONNX -> INT8 with fidelity + provenance.
 
-This subpackage is the export bridge (Task 16; Req 6.2, 6.3, 6.4, 10.5, 11.2,
-11.3, 11.4). It converts trained DTRB ``None-VGG-BiLSTM-CTC`` Base_Weights into
-a servable ONNX model, verifies export fidelity, quantizes to INT8, and records
-ONNX/quantization provenance.
-
-Import isolation (LOAD-BEARING)
--------------------------------
-* ``import olchiki_ocr`` (the core) MUST NOT import this subpackage, so the core
-  stays torch-free. Nothing in the core imports ``olchiki_ocr._export``.
-* Importing ``olchiki_ocr._export`` itself MUST NOT hard-fail when ``onnx`` /
-  ``onnxruntime`` are absent. Only ``numpy`` (a core dependency) is imported at
-  module top level by :mod:`._export.export`; ``torch`` (via
-  :mod:`._export._model_arch`) and ``onnx`` / ``onnxruntime`` are imported
-  **inside the functions that use them**, each guarded to raise a typed
-  ``ConfigError`` naming the missing ``[export]`` extra. So the missing-dep
-  error surfaces when a function is *called*, not at import time.
-
-Dependency set (Design Decision D1): ``[export]`` = ``torch`` + ``onnx`` (plus
-``onnxruntime`` for quantization/fidelity). No ``lmdb`` / DTRB clone; the export
+Import isolation is load-bearing: importing the core never imports this
+subpackage (core stays torch-free), and importing ``_export`` must not hard-fail
+when ``onnx``/``onnxruntime`` are absent -- heavy deps are imported inside the
+functions that use them, guarded to raise a ``ConfigError`` naming ``[export]``.
+Dependency set is ``torch`` + ``onnx`` (plus ``onnxruntime``); the model
 architecture is vendored in :mod:`._export._model_arch`.
 """
 
@@ -57,7 +43,6 @@ __all__ = [
     "INPUT_NAME",
     "OUTPUT_NAME",
     "INT8_DEGRADATION_THRESHOLD_PP",
-    # Full_Validation_Harness (Task 17.1).
     "run_full_validation",
     "load_manifest",
     "check_parity",

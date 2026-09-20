@@ -1,29 +1,14 @@
-"""Training configuration value type and validation for the ``[train]`` tier.
+"""Training-side config and validation for the ``[train]`` tier.
 
-This module defines the frozen ``Config`` dataclass that carries every runtime
-parameter for a fine-tuning run, plus ``validate_config`` which enforces the
-Configuration rules before any Sample is generated.
+Defines the frozen ``Config`` dataclass for a fine-tuning run and
+``validate_config``. This is the training counterpart to the core
+:class:`olchiki_ocr.config.InferenceConfig` and is not imported by the
+torch-free core.
 
-It is the training-oriented counterpart of the core, lightweight
-:class:`olchiki_ocr.config.InferenceConfig`: per the design's config split
-(Module Migration Plan), the training ``Config`` / ``validate_config`` live in
-the ``_train`` tier and are NOT imported by the torch-free core.
-
-Validation runs once, up front. On any invalid parameter ``validate_config``
-raises :class:`~olchiki_ocr.errors.ConfigError` (exit code 2) naming the
-offending setting -- or :class:`~olchiki_ocr.errors.CharsetError` (exit code 3)
-for an invalid ``extra_characters`` value, or
-:class:`~olchiki_ocr.errors.PretrainedModelError` (exit code 6) when
-``pretrained_recognizer`` names a path that is not an existing file.
-
-Low-resource preset (Req 10.3)
-------------------------------
-:func:`low_resource_config` returns a :class:`Config` wired for the low-resource
-fine-tune preset: it freezes the VGG FeatureExtraction backbone and trains only
-the BiLSTM SequenceModeling stage plus the CTC Prediction head, at a small batch
-size. The freeze is expressed via :attr:`Config.freeze_feature_extraction`,
-which the Trainer forwards to DTRB ``train.py`` as ``--freeze_FeatureExtraction``
-(see :mod:`olchiki_ocr._train.trainer`).
+``validate_config`` raises ``ConfigError`` (invalid setting), ``CharsetError``
+(bad ``extra_characters``), or ``PretrainedModelError`` (missing
+``pretrained_recognizer`` file). :func:`low_resource_config` freezes the VGG
+backbone and trains only BiLSTM + head at a small batch.
 """
 
 from __future__ import annotations
@@ -35,24 +20,18 @@ from ..errors import CharsetError, ConfigError, PretrainedModelError
 
 __all__ = ["Config", "validate_config", "low_resource_config", "LOW_RESOURCE_BATCH_SIZE"]
 
-# Compute devices accepted from the Configuration. Actual availability of a
-# requested CUDA device is checked later by ``select_device``.
+# Accepted devices; CUDA availability is checked later by ``select_device``.
 _VALID_DEVICES = ("cuda", "cpu")
 
-# Small batch size used by the low-resource preset (Req 10.3). Kept modest so
-# the frozen-backbone fine-tune fits on minimal compute.
+# Small batch size for the low-resource preset.
 LOW_RESOURCE_BATCH_SIZE = 16
 
 
 @dataclass(frozen=True)
 class Config:
-    """Immutable set of runtime parameters controlling a fine-tuning run.
+    """Immutable runtime parameters for a fine-tuning run.
 
-    Required parameters (``word_list_path``, ``font_paths``,
-    ``pretrained_recognizer``, ``output_dir``, ``dtrb_repo_path``) have no
-    default; the caller must supply them. All remaining parameters carry the
-    defaults documented in the design's Config table and mandated by the
-    requirements.
+    The first five fields are required (no default); the rest carry defaults.
     """
 
     # Required parameters.
@@ -81,33 +60,17 @@ class Config:
     network_feature: str = "VGG"  # DTRB Feat stage
     network_sequence: str = "BiLSTM"  # DTRB Seq stage
     network_prediction: str = "CTC"  # DTRB Pred stage
-    # Low-resource preset knob (Req 10.3): when True, the Trainer freezes the
-    # VGG FeatureExtraction backbone (via DTRB ``--freeze_FeatureExtraction``)
-    # so only the BiLSTM SequenceModeling stage and the CTC Prediction head are
-    # trained. Default False preserves full fine-tuning.
+    # When True the Trainer forwards ``--freeze_FeatureExtraction`` so only the
+    # BiLSTM stage and CTC head train. Default False = full fine-tuning.
     freeze_feature_extraction: bool = False
 
 
 def low_resource_config(base: Config) -> Config:
-    """Return a copy of ``base`` wired for the low-resource fine-tune preset.
+    """Return a copy of ``base`` wired for the low-resource preset.
 
-    The low-resource preset (Req 10.3) freezes the VGG FeatureExtraction
-    backbone and trains only the BiLSTM SequenceModeling stage plus the CTC
-    Prediction head, at a small batch size. Concretely this sets:
-
-    * ``freeze_feature_extraction=True`` -- the Trainer forwards
-      ``--freeze_FeatureExtraction`` to DTRB ``train.py`` so the VGG stage
-      parameters are frozen and only Sequence + Prediction are updated.
-    * ``batch_size=LOW_RESOURCE_BATCH_SIZE`` -- a small batch that fits on
-      minimal compute.
-    * ``network_feature="VGG"``, ``network_sequence="BiLSTM"``,
-      ``network_prediction="CTC"`` -- the ``None-VGG-BiLSTM-CTC`` stack the
-      Base_Weights are trained with (kept explicit so the preset is
-      self-describing).
-
-    All other fields are preserved from ``base`` so callers keep their paths,
-    seed, and remaining hyperparameters. The returned Config is validated the
-    same way as any other via :func:`validate_config`.
+    Freezes the VGG backbone and trains only BiLSTM + CTC head at a small batch
+    (``freeze_feature_extraction=True``, ``batch_size=LOW_RESOURCE_BATCH_SIZE``,
+    ``None-VGG-BiLSTM-CTC`` stack). Other fields are preserved from ``base``.
     """
     return replace(
         base,
@@ -120,42 +83,24 @@ def low_resource_config(base: Config) -> Config:
 
 
 def _is_int(value: object) -> bool:
-    """Return True if ``value`` is an integer but not a bool.
-
-    ``bool`` is a subclass of ``int`` in Python, but a boolean is not a valid
-    hyperparameter value, so it is rejected here.
-    """
+    """Return True if ``value`` is an int but not a bool (bool is not valid)."""
     return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _is_real(value: object) -> bool:
-    """Return True if ``value`` is a real number (int or float) but not a bool."""
+    """Return True if ``value`` is a real number (int/float) but not a bool."""
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def validate_config(cfg: Config) -> None:
-    """Validate every Configuration parameter before any Sample is produced.
+    """Validate every Config parameter before any Sample is produced.
 
-    Raises :class:`ConfigError` (or :class:`CharsetError` for an invalid
-    ``extra_characters`` value) naming the first invalid setting encountered.
-    Because this runs before generation, an invalid Configuration results in
-    zero Samples produced.
-
-    Rules enforced, in order:
-      * required params present and non-empty, with at least one ``font_path``.
-      * ``pretrained_recognizer`` names an existing regular file, else
-        :class:`PretrainedModelError` (exit code 6) -- fail-fast before any DTRB
-        subprocess is launched.
-      * each ``extra_characters`` char is a single Unicode code point, else
-        :class:`CharsetError` naming the value.
-      * ``0.0 <= val_fraction <= 1.0``.
-      * ``num_iterations`` is a positive integer.
-      * ``batch_size`` is a positive integer.
-      * ``learning_rate`` is a positive real number.
-      * ``device``, when set, is ``'cuda'`` or ``'cpu'`` (availability checked
-        later by ``select_device``).
+    Raises ``ConfigError`` for an invalid setting, ``CharsetError`` for a bad
+    ``extra_characters`` value, or ``PretrainedModelError`` when
+    ``pretrained_recognizer`` is not an existing file (fail-fast before any DTRB
+    subprocess).
     """
-    # Required, non-empty string parameters.
+    # Required, non-empty strings.
     if not cfg.word_list_path:
         raise ConfigError("word_list_path", "required parameter is missing or empty")
     if not cfg.font_paths:
@@ -167,9 +112,8 @@ def validate_config(cfg: Config) -> None:
         raise ConfigError(
             "pretrained_recognizer", "required parameter is missing or empty"
         )
-    # Fail fast before any DTRB subprocess if the checkpoint file is absent. The
-    # empty-string ConfigError above runs first, so an empty value raises
-    # ConfigError, not PretrainedModelError.
+    # Fail fast if the checkpoint file is absent (the empty-string check above
+    # runs first, so an empty value is a ConfigError, not this).
     if not os.path.isfile(cfg.pretrained_recognizer):
         raise PretrainedModelError(
             cfg.pretrained_recognizer,
@@ -181,15 +125,14 @@ def validate_config(cfg: Config) -> None:
     if not cfg.dtrb_repo_path:
         raise ConfigError("dtrb_repo_path", "required parameter is missing or empty")
 
-    # Each extra character must be a single Unicode code point. This is surfaced
-    # here for early failure; ``build_charset`` also guards later.
+    # Each extra character must be a single Unicode code point.
     for char in cfg.extra_characters:
         if len(char) != 1:
             raise CharsetError(
                 char, "extra character must be a single Unicode code point"
             )
 
-    # Validation split fraction in [0.0, 1.0].
+    # val_fraction in [0.0, 1.0].
     if not _is_real(cfg.val_fraction):
         raise ConfigError("val_fraction", "value must be a number")
     if not (0.0 <= cfg.val_fraction <= 1.0):
@@ -197,24 +140,24 @@ def validate_config(cfg: Config) -> None:
             "val_fraction", "value must be in the range 0.0 to 1.0 inclusive"
         )
 
-    # Number of training iterations: positive integer.
+    # num_iterations: positive integer.
     if not _is_int(cfg.num_iterations):
         raise ConfigError("num_iterations", "value must be an integer")
     if cfg.num_iterations <= 0:
         raise ConfigError("num_iterations", "value must be a positive integer")
 
-    # Batch size: positive integer.
+    # batch_size: positive integer.
     if not _is_int(cfg.batch_size):
         raise ConfigError("batch_size", "value must be an integer")
     if cfg.batch_size <= 0:
         raise ConfigError("batch_size", "value must be a positive integer")
 
-    # Learning rate: positive real number.
+    # learning_rate: positive real number.
     if not _is_real(cfg.learning_rate):
         raise ConfigError("learning_rate", "value must be a real number")
     if cfg.learning_rate <= 0:
         raise ConfigError("learning_rate", "value must be a positive real number")
 
-    # Compute device, when set, must be 'cuda' or 'cpu'.
+    # device, when set, must be 'cuda' or 'cpu'.
     if cfg.device is not None and cfg.device not in _VALID_DEVICES:
         raise ConfigError("device", "value must be 'cuda' or 'cpu' when specified")

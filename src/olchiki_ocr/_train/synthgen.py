@@ -1,49 +1,14 @@
-"""Synthetic training-sample generator for the ``[train]`` tier (Req 10).
+"""Synthetic training-sample generator for the ``[train]`` tier.
 
-The ``Synthetic_Generator`` renders each non-empty line of the ``Word_List``
-into a raster ``Text_Image`` paired with its ground-truth ``Label``, producing
-the labeled Dataset used to transfer-learn the recognizer. Because labeled Ol
-Chiki image data is scarce, this synthetic pipeline is the sole source of
-training Samples.
+``generate()`` renders each word from the Word_List into a labeled image across
+the configured fonts (round-robin), skips labels with missing glyphs (recording
+them in ``stats.skipped_labels``), and emits the DTRB raw layout
+(``images/*.png`` + ``gt.txt``). It raises ``IngestError`` for a missing word
+list and ``FontError`` for a bad font.
 
-Behavior:
-
-* Read the Word_List, one non-empty line per Label, preserving original order.
-  A missing Word_List path is fatal: :class:`IngestError` naming the path.
-* Render each Label with a configured Font_File using Pillow
-  (``ImageFont.truetype`` + ``ImageDraw``), cycling across the configured fonts
-  round-robin when more than one is given. A font that cannot be loaded is
-  fatal: :class:`FontError` naming the path.
-* Missing-glyph detection: a Label is renderable with a font iff every
-  ``ord(ch)`` is a key in that font's best cmap
-  (``fontTools.ttLib.TTFont(font_path).getBestCmap()``). If any character is
-  unmapped, the Label is skipped and ``(label, font_path)`` is recorded in
-  ``stats.skipped_labels``. TTFont/cmap objects are cached per font path.
-* Apply the configured augmentations (rotation jitter, gaussian blur, additive
-  noise, resize scaling) drawn from a seeded RNG so runs are reproducible.
-  Unknown augmentation names are fatal (raise ``ValueError``) so a typo does not
-  silently produce a different Dataset.
-* Encode each image as PNG.
-* Emit ``<work_dir>/images/*.png`` plus a ``gt.txt`` with
-  ``images/<name>.png<TAB><label>`` lines (DTRB raw layout), then return the
-  ordered ``list[Sample]``.
-
-Reproducibility: every random decision is driven by a single ``random.Random``
-seeded from ``cfg.seed``; PNG encoding is deterministic (fixed image mode, no
-timestamp chunk), so identical Config + inputs yield an identical Dataset - the
-same Sample sequence *and* identical rendered image bytes. When ``cfg.seed`` is
-``None`` this function falls back to a fixed default seed (``_DEFAULT_SEED``) so
-determinism still holds; the Orchestrator is responsible for drawing and
-recording a run-level seed when one is not supplied.
-
-Work directory layout (a pure function of ``cfg.output_dir``)::
-
-    <cfg.output_dir>/synthetic/
-        images/<index>.png      # zero-padded per-Sample PNG
-        gt.txt                  # "images/<index>.png\\t<label>" lines
-
-fontTools and Pillow are imported at module load, so importing this module
-requires the ``[train]`` extra (see :mod:`olchiki_ocr._train`).
+Generation is fully seeded, so identical Config + inputs yield identical Sample
+sequence and image bytes. fontTools and Pillow are imported at load, so this
+module needs the ``[train]`` extra.
 """
 
 from __future__ import annotations
@@ -62,25 +27,21 @@ from ..errors import FontError, IngestError
 
 __all__ = ["Sample", "generate"]
 
-# Fixed fallback seed used only when ``cfg.seed`` is None. The Orchestrator is
-# expected to draw and record a run-level seed in that case; this default merely
-# guarantees determinism for a fixed (here, absent) seed within this function.
+# Fallback seed when ``cfg.seed`` is None (keeps generation deterministic).
 _DEFAULT_SEED = 0
 
-# Sub-directory of ``cfg.output_dir`` holding the emitted Dataset.
+# Emitted Dataset layout under ``cfg.output_dir``.
 _WORK_SUBDIR = "synthetic"
 _IMAGES_SUBDIR = "images"
 _GT_FILENAME = "gt.txt"
 
-# Rendering geometry. Fixed values keep rendering deterministic; augmentations
-# perturb the base render, not these constants.
+# Fixed rendering geometry (deterministic; augmentations perturb the render).
 _FONT_SIZE = 32
 _PADDING = 8
 _BACKGROUND = 255  # white (grayscale "L" mode)
 _FOREGROUND = 0  # black text
 
-# Augmentation names supported by ``generate``. Any name in ``cfg.augmentations``
-# outside this set is rejected with a clear error.
+# Supported augmentation names; anything else is rejected.
 _ROTATION = "rotation"
 _BLUR = "blur"
 _NOISE = "noise"
@@ -90,14 +51,7 @@ _SUPPORTED_AUGMENTATIONS = frozenset({_ROTATION, _BLUR, _NOISE, _RESIZE})
 
 @dataclass(frozen=True)
 class Sample:
-    """A single training/evaluation unit: a rendered image and its Label.
-
-    Attributes:
-        image_path: Filesystem path to the rendered PNG Text_Image.
-        label: The ground-truth character sequence rendered into the image.
-        font_path: The Font_File used to render the image (for reporting and
-            multi-font provenance).
-    """
+    """A rendered image plus its Label and the font used to render it."""
 
     image_path: str
     label: str
@@ -105,14 +59,9 @@ class Sample:
 
 
 def _read_labels(word_list_path: str) -> list[str]:
-    """Return the non-empty lines of the Word_List as Labels, in order.
+    """Return the non-empty, order-preserving lines of the Word_List as Labels.
 
-    A line is considered empty (and therefore skipped) when it contains no
-    characters after stripping the trailing newline and surrounding whitespace.
-    The relative order of the non-empty lines is preserved.
-
-    Raises:
-        IngestError: If ``word_list_path`` does not exist.
+    One word per line. Raises IngestError if the path does not exist.
     """
     if not os.path.isfile(word_list_path):
         raise IngestError(word_list_path, "Word list path does not exist")
@@ -127,12 +76,7 @@ def _read_labels(word_list_path: str) -> list[str]:
 
 
 def _load_font(font_path: str) -> ImageFont.FreeTypeFont:
-    """Load a TrueType/OpenType font for rendering.
-
-    Raises:
-        FontError: If the font cannot be loaded by Pillow, naming the offending
-            path.
-    """
+    """Load a font for rendering; raises FontError if Pillow cannot load it."""
     try:
         return ImageFont.truetype(font_path, _FONT_SIZE)
     except OSError as exc:
@@ -140,14 +84,9 @@ def _load_font(font_path: str) -> ImageFont.FreeTypeFont:
 
 
 def _load_cmap(font_path: str) -> set[int]:
-    """Return the set of Unicode code points the font provides glyphs for.
+    """Return the Unicode code points the font has glyphs for (its best cmap).
 
-    Uses ``fontTools.ttLib.TTFont(font_path).getBestCmap()``: the best cmap is a
-    dict keyed by Unicode code point, so a character is renderable iff
-    ``ord(ch)`` is one of its keys.
-
-    Raises:
-        FontError: If the font cannot be parsed by fontTools.
+    Raises FontError if fontTools cannot parse the font.
     """
     try:
         ttfont = TTFont(font_path)
@@ -163,14 +102,8 @@ def _is_renderable(label: str, cmap: set[int]) -> bool:
 
 
 def _validate_augmentations(augmentations: tuple[str, ...]) -> None:
-    """Reject any unknown augmentation name with a clear error.
-
-    Unknown names are treated as fatal configuration mistakes rather than
-    silently ignored, so that a typo cannot quietly change the produced Dataset.
-
-    Raises:
-        ValueError: If an augmentation name is not one of the supported names.
-    """
+    """Raise ValueError on any unknown augmentation name (a typo must not
+    silently change the Dataset)."""
     for name in augmentations:
         if name not in _SUPPORTED_AUGMENTATIONS:
             raise ValueError(
@@ -180,13 +113,11 @@ def _validate_augmentations(augmentations: tuple[str, ...]) -> None:
 
 
 def _render_base(label: str, font: ImageFont.FreeTypeFont) -> Image.Image:
-    """Render ``label`` onto a tight white grayscale canvas.
+    """Render ``label`` onto a tight white grayscale ("L") canvas.
 
-    Sizing uses ``font.getbbox`` / ``ImageDraw.textbbox`` because Pillow 12
-    removed ``font.getsize``. The image mode is fixed to ``"L"`` (8-bit
-    grayscale) so encoding is deterministic and readable.
+    Uses ``textbbox`` for sizing (Pillow 12 removed ``font.getsize``).
     """
-    # Measure the text box. textbbox on a scratch draw accounts for bearings.
+    # textbbox on a scratch draw accounts for bearings.
     scratch = Image.new("L", (1, 1), _BACKGROUND)
     draw = ImageDraw.Draw(scratch)
     left, top, right, bottom = draw.textbbox((0, 0), label, font=font)
@@ -198,7 +129,7 @@ def _render_base(label: str, font: ImageFont.FreeTypeFont) -> Image.Image:
 
     image = Image.new("L", (width, height), _BACKGROUND)
     draw = ImageDraw.Draw(image)
-    # Offset by (-left, -top) so glyphs with negative bearings sit inside the pad.
+    # Offset by (-left, -top) so negative bearings stay inside the pad.
     draw.text((_PADDING - left, _PADDING - top), label, fill=_FOREGROUND, font=font)
     return image
 
@@ -206,20 +137,14 @@ def _render_base(label: str, font: ImageFont.FreeTypeFont) -> Image.Image:
 def _apply_augmentations(
     image: Image.Image, augmentations: tuple[str, ...], rng: random.Random
 ) -> Image.Image:
-    """Apply the configured augmentations, drawing all randomness from ``rng``.
-
-    Each augmentation is gated by presence in ``augmentations`` and applied in a
-    fixed order (rotation -> blur -> noise -> resize) so the transformation is a
-    deterministic function of the RNG state. ``rng`` values are consumed only for
-    augmentations that are enabled, keeping the RNG stream identical across runs
-    for identical Config.
-    """
+    """Apply enabled augmentations in a fixed order (rotation, blur, noise,
+    resize), drawing all randomness from ``rng`` for reproducibility."""
     from PIL import ImageFilter
 
     result = image
 
     if _ROTATION in augmentations:
-        # Small rotation jitter in degrees; expand so corners are not clipped.
+        # Small rotation jitter; expand so corners are not clipped.
         angle = rng.uniform(-5.0, 5.0)
         result = result.rotate(
             angle, resample=Image.BICUBIC, expand=True, fillcolor=_BACKGROUND
@@ -230,11 +155,8 @@ def _apply_augmentations(
         result = result.filter(ImageFilter.GaussianBlur(radius=radius))
 
     if _NOISE in augmentations:
-        # Additive per-pixel noise. Read pixels as a flat row-major byte
-        # sequence (one byte per pixel for the fixed 8-bit "L" mode), which
-        # matches the order the RNG is consumed in, so output stays a
-        # deterministic function of the seed. Avoids the deprecated
-        # Image.getdata().
+        # Additive per-pixel noise over the flat "L"-mode byte sequence, so the
+        # result stays a deterministic function of the seed.
         strength = rng.uniform(5.0, 25.0)
         pixels = list(result.tobytes())
         noisy = []
@@ -254,55 +176,31 @@ def _apply_augmentations(
 
 
 def _save_png(image: Image.Image, path: str) -> None:
-    """Write ``image`` to ``path`` as a deterministic PNG.
-
-    ``optimize`` is left off and no ancillary time chunk is written, so the
-    encoded bytes depend only on the pixel data and mode - giving identical
-    bytes across runs for identical input.
-    """
+    """Write ``image`` as a deterministic PNG (no optimize/time chunk)."""
     image.save(path, format="PNG")
 
 
 def generate(cfg: Config, charset: Charset, stats: RunStats) -> list[Sample]:
     """Render the Word_List into Samples and emit the DTRB raw dataset layout.
 
-    See the module docstring for the full behavior contract. Returns the ordered
-    list of produced :class:`Sample` objects (skipped Labels are omitted) and
-    records ``stats.dataset_sample_count`` plus any ``stats.skipped_labels``.
-
-    Args:
-        cfg: The validated run Configuration. Uses ``word_list_path``,
-            ``font_paths``, ``augmentations``, ``seed``, and ``output_dir``.
-        charset: The recognition Charset (accepted for interface symmetry with
-            the other stages; rendering does not restrict to it - missing-glyph
-            handling is per-font).
-        stats: The mutable accumulator; ``skipped_labels`` and
-            ``dataset_sample_count`` are updated in place.
-
-    Returns:
-        The ordered list of produced Samples.
-
-    Raises:
-        IngestError: If ``cfg.word_list_path`` does not exist.
-        FontError: If a configured Font_File cannot be loaded.
-        ValueError: If ``cfg.augmentations`` names an unsupported augmentation.
+    Returns the ordered Samples (skipped labels omitted) and updates
+    ``stats.dataset_sample_count`` / ``stats.skipped_labels``. Raises IngestError
+    (missing word list), FontError (bad font), or ValueError (unknown
+    augmentation).
     """
     _validate_augmentations(cfg.augmentations)
 
     labels = _read_labels(cfg.word_list_path)
 
-    # Seed a single RNG from the Config seed (fixed default when None) so the
-    # whole generation - font cycling perturbations and augmentations - is a
-    # deterministic function of the seed.
+    # Single seeded RNG so the whole generation is deterministic.
     seed = cfg.seed if cfg.seed is not None else _DEFAULT_SEED
     rng = random.Random(seed)
 
-    # Prepare the work directory layout under output_dir.
     work_dir = os.path.join(cfg.output_dir, _WORK_SUBDIR)
     images_dir = os.path.join(work_dir, _IMAGES_SUBDIR)
     os.makedirs(images_dir, exist_ok=True)
 
-    # Cache loaded fonts and their cmaps per path for efficiency.
+    # Cache fonts and cmaps per path.
     font_cache: dict[str, ImageFont.FreeTypeFont] = {}
     cmap_cache: dict[str, set[int]] = {}
 
@@ -316,24 +214,22 @@ def generate(cfg: Config, charset: Charset, stats: RunStats) -> list[Sample]:
             cmap_cache[path] = _load_cmap(path)
         return cmap_cache[path]
 
-    # Eagerly load every configured font so an unloadable font fails fast with
-    # FontError before any Sample is emitted.
+    # Eagerly load every font so a bad font fails fast before any Sample.
     for font_path in cfg.font_paths:
         font_for(font_path)
         cmap_for(font_path)
 
     samples: list[Sample] = []
     gt_lines: list[str] = []
-    # Zero-pad the image index so filenames sort naturally and stay stable.
+    # Zero-pad the index so filenames sort naturally.
     index_width = max(1, len(str(max(len(labels) - 1, 0))))
 
     for label_index, label in enumerate(labels):
-        # Cycle across fonts round-robin so Samples span every configured font.
-        # Single-font configs always pick font_paths[0].
+        # Round-robin across the configured fonts.
         font_path = cfg.font_paths[label_index % len(cfg.font_paths)]
         cmap = cmap_for(font_path)
 
-        # Missing-glyph detection: skip and record if any char is unmapped.
+        # Skip and record labels with any unmapped glyph.
         if not _is_renderable(label, cmap):
             stats.skipped_labels.append((label, font_path))
             continue
@@ -353,7 +249,7 @@ def generate(cfg: Config, charset: Charset, stats: RunStats) -> list[Sample]:
         # DTRB raw layout: "images/<name>.png<TAB><label>".
         gt_lines.append(f"{image_rel_path}\t{label}")
 
-    # Write the ground-truth manifest as UTF-8 with a trailing newline per line.
+    # Write the gt.txt manifest as UTF-8.
     gt_path = os.path.join(work_dir, _GT_FILENAME)
     with open(gt_path, "w", encoding="utf-8", newline="\n") as handle:
         for gt_line in gt_lines:

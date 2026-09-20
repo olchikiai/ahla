@@ -1,55 +1,20 @@
-"""Full_Validation_Harness: ONNX greedy parity vs the trained baseline.
+"""Full validation harness: ONNX greedy parity vs the trained baseline.
 
-This is the validation/CI tool behind Task 17 (Req 11.1, Correctness Property
-P16). It runs the package's **own ONNX greedy inference path** -- the exact same
-core components a bare ``pip install olchiki-ocr`` uses at runtime
-(:class:`~olchiki_ocr.session.OnnxSession`,
-:class:`~olchiki_ocr.preprocessing.Preprocessing_Pipeline`,
-:class:`~olchiki_ocr.decoders.GreedyDecoder`, and
-:func:`~olchiki_ocr.charset.build_charset`) -- over the full validation set and
-scores exact-match word accuracy with the carried-over
-:func:`olchiki_ocr._train.evaluator.evaluate`. The measured accuracy is compared
-against the trained model's 99.844% baseline within the 0.2 pp tolerance
-(Design Decision D7): the parity bar is **>= 99.644%**.
+Runs the package's own ONNX greedy inference path (the same core components a
+bare install uses at runtime) over the full validation set and scores
+exact-match word accuracy with the pure ``_train.evaluator.evaluate``. The
+measured accuracy is compared against the trained baseline of 99.844% within a
+0.2 pp tolerance, so the parity bar is >= 99.644%.
 
-Why it lives under ``_export`` (Task 17.1 location decision)
-------------------------------------------------------------
-The harness is a parity/fidelity *validation* tool, not part of the core
-inference surface. It legitimately uses ``onnxruntime`` (through the core
-``OnnxSession``) and runs in the ``[export]`` / CI environment alongside the
-export tooling (Task 16 installed ``onnx`` / ``onnxruntime`` there), and the
-INT8 re-validation step (:func:`olchiki_ocr._export.export.revalidate_and_record`,
-Req 11.3) is exactly the caller that needs FP32-vs-INT8 accuracy numbers. Placing
-it in ``olchiki_ocr._export.harness`` keeps it in the export/CI story and out of
-the torch-free core: ``import olchiki_ocr`` never imports this module, so the
-core import stays engine-light (verified by Task 14.2's smoke test and re-checked
-in Task 17.1's verification).
+It lives under ``_export`` because it is a validation tool that uses
+``onnxruntime`` (via the core ``OnnxSession``) and is the counterpart to the
+INT8 re-validation step -- ``import olchiki_ocr`` never imports it, keeping the
+core torch-free. Only ``numpy`` and the core (lazily) are needed to run it.
 
-Import isolation (LOAD-BEARING)
--------------------------------
-Only core dependencies (``numpy``; and, lazily, the core ``OnnxSession`` which
-imports ``onnxruntime``) are needed to *run* the harness. It reuses
-:mod:`olchiki_ocr._train.evaluator`, which is a **pure** module (no torch / no
-lmdb / no onnxruntime). No torch import happens here -- producing a real ONNX to
-validate is the caller's concern (they use :mod:`olchiki_ocr._export.export`).
-
-Validation dataset format
---------------------------
-The baseline (DTRB fine-tune) writes a validation manifest ``val_manifest.txt``
-under the shared ``output_dir`` -- a UTF-8, tab-separated file of
-``<image_path>\t<label>`` lines (one validation sample per line). That manifest
-IS the full validation set the 99.844% baseline was measured over (the run
-report records 12,836 validation samples, matching the manifest line count), so
-reading it reproduces the baseline's sample set faithfully on the ONNX path.
-:func:`load_manifest` reads that format; the DTRB clone also stores the same
-samples in an LMDB (``output_dir/lmdb/val``) that requires the ``[train]`` extra
-(``lmdb``) to read -- the manifest reader is preferred because it needs no extra
-dependency and directly names the on-disk images.
-
-The primary entry point :func:`run_full_validation` accepts EITHER a path to the
-manifest OR any iterable of ``(image, label)`` pairs (where ``image`` is a
-filesystem path or a preprocessed ``(1,1,32,W)`` ndarray), so the parity test
-(Task 17.2) can drive it with real or synthetic data.
+Validation data is a DTRB-style ``val_manifest.txt`` (UTF-8, tab-separated
+``<image_path>\t<label>`` lines) read by :func:`load_manifest`, or any iterable
+of ``(image, label)`` pairs where ``image`` is a path or a preprocessed
+``(1,1,32,W)`` ndarray, so tests can drive it with real or synthetic data.
 """
 
 from __future__ import annotations
@@ -72,44 +37,23 @@ __all__ = [
     "check_parity",
 ]
 
-#: The trained model's exact-match word accuracy on the full validation set, in
-#: percentage points (design Overview / Req 11.1).
+#: Trained model's exact-match word accuracy on the full validation set (pp).
 BASELINE_ACCURACY_PP: float = 99.844
 
-#: Parity tolerance in percentage points (Design Decision D7 / Req 11.1).
+#: Parity tolerance (pp).
 PARITY_TOLERANCE_PP: float = 0.2
 
-#: The minimum acceptable ONNX greedy accuracy (pp): baseline minus tolerance =
-#: 99.644%. Task 17.2 asserts the measured accuracy is >= this value (P16).
+#: Minimum acceptable ONNX greedy accuracy (pp): baseline minus tolerance.
 PARITY_MIN_ACCURACY_PP: float = BASELINE_ACCURACY_PP - PARITY_TOLERANCE_PP
 
-#: A validation sample: an image (filesystem path or preprocessed ndarray input
-#: tensor of shape ``(1,1,32,W)``) paired with its ground-truth label.
+#: A validation sample: an image (path or ``(1,1,32,W)`` ndarray) plus its label.
 ImageOrArray = Union[str, "Path", np.ndarray]
 Sample = Tuple[ImageOrArray, str]
 
 
 @dataclass(frozen=True)
 class HarnessResult:
-    """Result of a Full_Validation_Harness run.
-
-    Wraps the pure :class:`~olchiki_ocr._train.evaluator.EvalResult` (exact-match
-    ``word_accuracy`` in ``[0, 1]`` plus CER) and exposes the accuracy in
-    percentage points alongside the baseline/parity bookkeeping so callers (the
-    parity test P16, and :func:`revalidate_and_record`) can read the numbers
-    directly.
-
-    Attributes:
-        eval_result: The underlying evaluator result (``word_accuracy`` in
-            ``[0, 1]``, ``cer``, ``sample_count``, ``empty``).
-        word_accuracy_pp: ``eval_result.word_accuracy * 100`` -- exact-match
-            accuracy in percentage points, directly comparable to
-            :data:`BASELINE_ACCURACY_PP`.
-        baseline_accuracy_pp: The baseline accuracy compared against
-            (:data:`BASELINE_ACCURACY_PP`).
-        min_accuracy_pp: The parity bar (:data:`PARITY_MIN_ACCURACY_PP`).
-        meets_parity: True iff ``word_accuracy_pp >= min_accuracy_pp`` (P16).
-    """
+    """Result of a validation harness run (accuracy in pp + parity bookkeeping)."""
 
     eval_result: EvalResult
     word_accuracy_pp: float
@@ -119,7 +63,7 @@ class HarnessResult:
 
     @property
     def word_accuracy(self) -> float:
-        """Exact-match word accuracy in ``[0, 1]`` (from the evaluator)."""
+        """Exact-match word accuracy in ``[0, 1]``."""
         return self.eval_result.word_accuracy
 
     @property
@@ -134,32 +78,13 @@ class HarnessResult:
 
 
 def load_manifest(manifest_path: Union[str, "Path"]) -> list[Sample]:
-    """Load a DTRB-style validation manifest into ``(image_path, label)`` pairs.
+    """Load a DTRB-style ``val_manifest.txt`` into ``(image_path, label)`` pairs.
 
-    The manifest is the ``val_manifest.txt`` written by the fine-tune data-prep
-    phase under the shared ``output_dir``: a UTF-8 text file with one validation
-    sample per line, formatted ``<image_path>\\t<label>``. Blank lines are
-    skipped.
-
-    Image-path resolution: absolute paths are used as-is. A relative path is
-    tried first **as written** (relative to the current working directory, which
-    is how the DTRB-written manifest stores paths -- e.g.
-    ``output/finetune/synthetic/images/..``, relative to the project root), and
-    only if that file does not exist is it resolved **relative to the manifest
-    file's directory** (so a manifest copied alongside its images still works).
-    This dual strategy handles both the repo's real manifest and relocated
-    copies without double-prefixing.
-
-    Args:
-        manifest_path: Path to the ``val_manifest.txt`` file.
-
-    Returns:
-        A list of ``(image_path, label)`` tuples in manifest order, where
-        ``image_path`` is a resolved filesystem path string.
-
-    Raises:
-        FileNotFoundError: If ``manifest_path`` does not exist.
-        ValueError: If a non-blank line does not contain a tab separator.
+    UTF-8, tab-separated ``<image_path>\\t<label>`` lines; blank lines skipped.
+    Relative paths are tried as-written (relative to CWD, as the manifest stores
+    them) and only fall back to manifest-dir-relative if that misses, so
+    relocated manifest+images copies still resolve. Raises ``FileNotFoundError``
+    if the manifest is missing and ``ValueError`` on a line without a tab.
     """
     manifest = Path(manifest_path)
     if not manifest.is_file():
@@ -178,15 +103,11 @@ def load_manifest(manifest_path: Union[str, "Path"]) -> list[Sample]:
                     f"'<image_path>\\t<label>'): {line!r}"
                 )
             image_field, label = line.split("\t", 1)
-            # Manifest paths may use backslashes (Windows-written). Normalize the
-            # separators, then resolve.
+            # Normalize Windows-written backslashes before resolving.
             image_field = image_field.replace("\\", "/")
             image_path = Path(image_field)
             if not image_path.is_absolute():
-                # Prefer the path as written (relative to CWD): the DTRB-written
-                # manifest stores project-root-relative paths. Fall back to
-                # manifest-dir-relative only if the as-written path is missing,
-                # so a relocated manifest+images copy still resolves.
+                # Prefer the as-written path; fall back to manifest-dir-relative.
                 if not image_path.is_file():
                     candidate = base_dir / image_path
                     if candidate.is_file():
@@ -198,14 +119,7 @@ def load_manifest(manifest_path: Union[str, "Path"]) -> list[Sample]:
 def _iter_samples(
     validation_data: Union[str, "Path", Iterable[Sample]],
 ) -> Iterator[Sample]:
-    """Yield ``(image, label)`` samples from a manifest path or an iterable.
-
-    A ``str``/``Path`` is treated as a manifest file and loaded via
-    :func:`load_manifest`; anything else is treated as an already-prepared
-    iterable of ``(image, label)`` pairs and yielded as-is. This is what lets
-    :func:`run_full_validation` accept either the real dataset or test-supplied
-    synthetic data.
-    """
+    """Yield ``(image, label)`` samples from a manifest path or an iterable."""
     if isinstance(validation_data, (str, Path)):
         yield from load_manifest(validation_data)
     else:
@@ -222,54 +136,16 @@ def run_full_validation(
     session: Optional[object] = None,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> HarnessResult:
-    """Run the ONNX greedy path over the validation set and score it (P16).
+    """Run the ONNX greedy path over the validation set and score it.
 
-    For each ``(image, label)`` sample this runs the package's **own** core
-    inference path -- identical to what a runtime ``predict`` does with the
-    default greedy decoder:
-
-    1. preprocess the image with the default
-       :class:`~olchiki_ocr.preprocessing.Preprocessing_Pipeline`
-       (DTRB ``ResizeNormalize`` -> ``(1,1,32,W)`` in ``[-1,1]``). If a sample's
-       ``image`` is already an ndarray, it is used directly as the input tensor
-       (so callers can pre-batch / cache preprocessing).
-    2. run :meth:`~olchiki_ocr.session.OnnxSession.run` to get ``(T, 49)`` (or
-       ``(1, T, 49)``) logits;
-    3. greedy-decode with :class:`~olchiki_ocr.decoders.GreedyDecoder` against
-       ``build_charset(extra_characters)`` to get the predicted text.
-
-    Predictions and labels are then scored with the pure
-    :func:`~olchiki_ocr._train.evaluator.evaluate`, and the exact-match
-    ``word_accuracy`` is compared against :data:`BASELINE_ACCURACY_PP` within
-    :data:`PARITY_TOLERANCE_PP` (parity bar :data:`PARITY_MIN_ACCURACY_PP`).
-
-    Args:
-        onnx_path: Path to the ONNX model to validate (FP32 or INT8). Ignored
-            when ``session`` is supplied.
-        validation_data: Either a path to a ``val_manifest.txt`` (loaded via
-            :func:`load_manifest`) or an iterable of ``(image, label)`` pairs,
-            where ``image`` is a filesystem path or a preprocessed ndarray.
-        device: Compute device for the ONNX session (``None`` -> CPU;
-            ``"gpu"``/``"cuda"`` -> CUDA when available). Ignored when
-            ``session`` is supplied.
-        extra_characters: Extra characters passed to
-            :func:`~olchiki_ocr.charset.build_charset` (default ``""`` -> the
-            48-character Ol Chiki charset the baseline used).
-        session: An optional pre-built session object exposing a
-            ``run(tensor) -> logits`` method (duck-typed). When provided,
-            ``onnx_path``/``device`` are not used to construct a session -- this
-            is the injection point the verification/tests use to drive the
-            harness with a fake session and no real ONNX file.
-        progress: Optional ``callback(done, total_or_-1)`` invoked after each
-            sample for long runs (``total`` is ``-1`` when the sample source is
-            a lazy iterable of unknown length).
-
-    Returns:
-        A :class:`HarnessResult` with the exact-match accuracy (fraction and
-        pp), the baseline/parity bookkeeping, and ``meets_parity``.
+    For each sample: preprocess (or use a supplied ndarray tensor), run the ONNX
+    session, and greedy-decode against ``build_charset(extra_characters)``.
+    Predictions and labels are scored with ``evaluate`` and compared to the
+    baseline within the parity tolerance. Pass ``session`` to inject a
+    duck-typed ``run(tensor) -> logits`` object (bypassing ``onnx_path``/
+    ``device``), e.g. for tests. Returns a :class:`HarnessResult`.
     """
-    # Lazy core imports: keep this module import-light and avoid constructing a
-    # session (which loads onnxruntime) until a run actually happens.
+    # Lazy core imports: keep import-light and defer loading onnxruntime.
     from ..charset import build_charset
     from ..decoders import GreedyDecoder
     from ..preprocessing import Preprocessing_Pipeline
@@ -284,8 +160,8 @@ def run_full_validation(
 
         run_session = OnnxSession(onnx_path, device=device)
 
-    # Materialize a list only if we were given a concrete sequence, so we can
-    # report a meaningful total; otherwise stream and report total == -1.
+    # Materialize only a concrete sequence (to report a total); else stream
+    # with total == -1.
     samples_source: Union[Sequence[Sample], Iterator[Sample]]
     total = -1
     if isinstance(validation_data, (str, Path)):
@@ -333,21 +209,11 @@ def check_parity(
     *,
     min_accuracy_pp: float = PARITY_MIN_ACCURACY_PP,
 ) -> bool:
-    """Return whether a harness result meets the parity bar (P16, Req 11.1).
+    """Return whether a result meets the parity bar (default 99.644 pp).
 
-    Accepts a :class:`HarnessResult`, a raw
-    :class:`~olchiki_ocr._train.evaluator.EvalResult` (whose ``word_accuracy`` is
-    a fraction in ``[0, 1]``), or a plain accuracy value. A plain value is
-    interpreted as a fraction in ``[0, 1]`` when ``<= 1.0`` and otherwise as
-    already being in percentage points, so both ``0.99844`` and ``99.844`` work.
-
-    Args:
-        result: The harness/eval result or accuracy value to check.
-        min_accuracy_pp: The parity bar in pp (default
-            :data:`PARITY_MIN_ACCURACY_PP` = 99.644).
-
-    Returns:
-        True iff the accuracy is ``>= min_accuracy_pp``.
+    Accepts a :class:`HarnessResult`, an ``EvalResult`` (``word_accuracy`` a
+    fraction), or a plain value read as a fraction when ``<= 1.0`` and otherwise
+    as pp, so both ``0.99844`` and ``99.844`` work.
     """
     if isinstance(result, HarnessResult):
         accuracy_pp = result.word_accuracy_pp

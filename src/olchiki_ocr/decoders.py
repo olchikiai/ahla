@@ -1,36 +1,15 @@
-"""CTC decoders over per-timestep class scores (design: ``decoders.py``; Req 7).
+"""CTC decoders over per-timestep class scores.
 
-This module implements the package's own CTC decoding so the core inference tier
-stays torch-free (Req 2.2, 2.3). It depends only on numpy plus the pure-stdlib
-CTC-convention constants in :mod:`olchiki_ocr._ctc` and the :class:`~olchiki_ocr.charset.Charset`
-type; it must NOT import torch, onnxruntime, easyocr, or cv2.
+Pure-numpy so the core stays torch-free (no torch/onnxruntime/easyocr/cv2).
 
-``GreedyDecoder`` (the default decoder, Req 7.1) performs the canonical DTRB
-``CTCLabelConverter`` greedy decode: per-timestep argmax, collapse consecutive
-duplicate class indices, then drop the CTC blank (index 0 per confirmed Design
-Decision D8, see :mod:`olchiki_ocr._ctc`). Surviving emit indices map to charset
-characters via ``charset.characters[i - 1]``.
+CTC layout: the blank is at index 0, and a surviving emit index ``i`` maps to
+``charset.characters[i - 1]``. Greedy decode is argmax per timestep -> collapse
+consecutive dups -> drop the blank. Decoders take raw logits ``(T, NUM_CLASSES)``
+(a leading batch dim of 1 is squeezed) and apply a stable softmax internally so
+the confidence is a real probability.
 
-Input / logits-vs-probabilities convention
--------------------------------------------
-``GreedyDecoder.decode`` expects the **raw model output logits** for a single
-image, matching the predict flow where ``OnnxSession.run`` returns logits of
-shape ``(T, NUM_CLASSES)``. A leading batch dimension of 1 (shape
-``(1, T, NUM_CLASSES)``) is accepted and squeezed. The decoder applies a
-numerically stable softmax over the class dimension internally so the confidence
-is a meaningful probability. Softmax is monotonic, so it does not change the
-per-timestep argmax path; passing already-normalized probabilities instead of
-logits therefore yields the same decoded text and an only-slightly-shifted
-confidence (softmax is approximately idempotent for decode purposes), but the
-documented and intended input is logits.
-
-Confidence (Design Decision D2, Req 1.4)
-----------------------------------------
-Greedy confidence is the mean over the **emitted** timesteps of the per-timestep
-maximum softmax probability, in ``[0, 1]``. "Emitted timesteps" are exactly the
-argmax positions that survive collapse + blank-removal, i.e. the timesteps that
-each contribute one character to the decoded text. If the decoded text is empty
-(no emitted timesteps), the confidence is ``0.0``.
+Confidence: greedy = mean per-timestep max softmax over the emitted timesteps;
+``0.0`` for empty output.
 """
 
 from __future__ import annotations
@@ -50,45 +29,21 @@ __all__ = ["GreedyDecoder", "BeamSearchDecoder", "ScoreFn"]
 
 
 def _softmax(scores: np.ndarray) -> np.ndarray:
-    """Numerically stable softmax over the last (class) axis.
-
-    Subtracts the per-row max before exponentiating so large logits do not
-    overflow. Returns an array of the same shape whose last axis sums to 1.
-    """
+    """Numerically stable softmax over the last (class) axis."""
     shifted = scores - np.max(scores, axis=-1, keepdims=True)
     exp = np.exp(shifted)
     return exp / np.sum(exp, axis=-1, keepdims=True)
 
 
 class GreedyDecoder:
-    """Greedy (best-path) CTC decoder — the default decoder (Req 7.1).
-
-    Stateless: a single instance can decode any number of inputs. Construction
-    takes no arguments so the recognizer can create one cheaply.
-    """
+    """Greedy (best-path) CTC decoder — the default. Stateless and reusable."""
 
     def decode(self, probs: np.ndarray, charset: "Charset") -> tuple[str, float]:
-        """Greedily decode one image's CTC output to ``(text, confidence)``.
+        """Greedily decode one image's CTC logits to ``(text, confidence)``.
 
-        Args:
-            probs: The model output **logits** for a single image, of shape
-                ``(T, NUM_CLASSES)`` or ``(1, T, NUM_CLASSES)`` (a leading batch
-                dimension of 1 is squeezed). ``NUM_CLASSES`` is 49 (48 emit
-                classes + 1 CTC blank at index 0). A stable softmax is applied
-                over the class axis internally, so raw logits are expected.
-            charset: The recognition :class:`~olchiki_ocr.charset.Charset`; emit
-                class index ``i`` (1..48) maps to ``charset.characters[i - 1]``.
-
-        Returns:
-            A ``(text, confidence)`` tuple. ``text`` is the decoded string
-            (consecutive duplicates collapsed and blanks removed). ``confidence``
-            is the mean per-timestep max softmax probability over the emitted
-            timesteps, in ``[0, 1]``; ``0.0`` when ``text`` is empty.
-
-        Raises:
-            ValueError: If the input does not have a class dimension of
-                ``NUM_CLASSES`` after squeezing a leading batch dim of 1, or is
-                not 2-dimensional.
+        ``probs`` are raw logits of shape ``(T, NUM_CLASSES)`` or
+        ``(1, T, NUM_CLASSES)``. Raises ``ValueError`` if not 2-D (after
+        squeezing a leading batch dim of 1) or the class dim isn't NUM_CLASSES.
         """
         scores = np.asarray(probs)
 
@@ -106,16 +61,13 @@ class GreedyDecoder:
                 f"expected class dimension {NUM_CLASSES}; got {scores.shape[1]}"
             )
 
-        # Softmax over the class dimension so per-timestep max is a probability.
         probabilities = _softmax(scores.astype(np.float64))
 
-        # Per-timestep best class (argmax path) and its probability.
         best_indices = np.argmax(probabilities, axis=1)
         best_probs = probabilities[np.arange(probabilities.shape[0]), best_indices]
 
-        # CTC greedy collapse: walk the argmax path, skip a class that repeats
-        # the immediately previous class (collapse consecutive duplicates), then
-        # skip the blank. A surviving position is an "emitted timestep".
+        # Greedy collapse: skip a class that repeats the previous one, then skip
+        # the blank. Surviving positions are the "emitted timesteps".
         chars: list[str] = []
         emitted_probs: list[float] = []
         previous = -1  # sentinel: no previous class
@@ -138,24 +90,19 @@ class GreedyDecoder:
         return text, confidence
 
 
-# ---------------------------------------------------------------------------
-# Task 7.4: beam search decoder + pluggable ScoreFn hook (Req 7.2-7.8).
-# ---------------------------------------------------------------------------
+# Beam search decoder + pluggable ScoreFn hook.
 
-#: Inclusive valid range for the beam width (Req 7.3, 7.4).
+#: Inclusive valid range for the beam width.
 _MIN_BEAM_WIDTH = 1
 _MAX_BEAM_WIDTH = 100
 
 
 @runtime_checkable
 class ScoreFn(Protocol):
-    """Pluggable prefix-scoring hook for :class:`BeamSearchDecoder` (Req 7.6, 7.8).
+    """Pluggable prefix-scoring hook for :class:`BeamSearchDecoder`.
 
-    A ``ScoreFn`` is any callable that maps a candidate decoded ``prefix`` (the
-    string decoded so far) to a real-valued score, where a **higher** score is
-    better. This is the extension point for a user-supplied language model: a
-    KenLM or neural LM can be wrapped as a ``ScoreFn``, but the core ships none
-    and requires none (Req 7.7) — the protocol is the only contract.
+    Any callable mapping a decoded ``prefix`` to a score where higher is better;
+    the extension point for a user-supplied LM. The core ships none.
 
     Example::
 
@@ -172,23 +119,7 @@ class ScoreFn(Protocol):
 def _validate_beam_width(beam_width: object) -> int:
     """Validate a beam width, raising :class:`ConfigError` naming the value.
 
-    A valid beam width is an ``int`` (note: ``bool`` is rejected even though it
-    subclasses ``int``) in the inclusive range ``1..100`` (Req 7.3). Anything
-    else — a non-integer such as a float or string, or an out-of-range integer —
-    raises ``ConfigError(parameter="beam_width", ...)`` whose message names the
-    offending value (Req 7.4). ``ConfigError`` is chosen over a bare
-    ``ValueError`` because it names the offending parameter/value and integrates
-    with the CLI exit-code mapping (exit code 2).
-
-    Args:
-        beam_width: The candidate beam width to validate.
-
-    Returns:
-        The validated ``int`` beam width.
-
-    Raises:
-        ConfigError: If ``beam_width`` is not an integer, is a bool, or lies
-            outside the inclusive range ``1..100``; the message names the value.
+    Must be an ``int`` (``bool`` rejected) in the inclusive range ``1..100``.
     """
     if isinstance(beam_width, bool) or not isinstance(beam_width, int):
         raise ConfigError(
@@ -206,26 +137,15 @@ def _validate_beam_width(beam_width: object) -> int:
 
 
 class BeamSearchDecoder:
-    """CTC prefix beam-search decoder (Req 7.2-7.8).
+    """CTC prefix beam-search decoder.
 
-    Implements standard CTC prefix beam search over the per-timestep class
-    scores: each beam tracks its accumulated blank-ending and non-blank-ending
-    prefix probabilities, equal prefixes are merged, and only the top
-    ``beam_width`` beams (by total probability) are kept at each timestep.
+    Standard CTC prefix beam search: each beam tracks blank-ending and
+    non-blank-ending prefix probabilities, equal prefixes merge, and only the
+    top ``beam_width`` beams survive each timestep.
 
-    Optional constraints:
-
-    - **Lexicon** (Req 7.5): when a non-empty :class:`~olchiki_ocr.lexicon.Lexicon`
-      is supplied, the final decoded output is constrained to lexicon members —
-      see :meth:`decode` for the exact policy (Property 7).
-    - **ScoreFn** (Req 7.6): when a :class:`ScoreFn` is supplied, final
-      candidates are ranked by ``(score_fn(prefix), ctc_prob)`` compared
-      lexicographically, so equal scores fall back to the higher accumulated CTC
-      probability (Property 9).
-
-    Configuration reduces to greedy in the trivial case: ``beam_width == 1`` with
-    no lexicon and no score_fn produces the same text as :class:`GreedyDecoder`
-    for any input (Property 6).
+    An optional lexicon constrains the final output to its members; an optional
+    :class:`ScoreFn` ranks candidates by ``(score_fn(prefix), ctc_prob)``. The
+    trivial config (``beam_width == 1``, no lexicon/score_fn) reduces to greedy.
     """
 
     def __init__(
@@ -236,60 +156,34 @@ class BeamSearchDecoder:
     ) -> None:
         """Construct a beam-search decoder.
 
-        Args:
-            beam_width: Number of beams retained per timestep. Defaults to 10
-                (Req 7.2). Must be an integer in the inclusive range ``1..100``
-                (Req 7.3); validated at construction (Req 7.4).
-            lexicon: Optional lexicon constraining the final output (Req 7.5).
-            score_fn: Optional prefix scorer used to rank candidates (Req 7.6).
-
-        Raises:
-            ConfigError: If ``beam_width`` is not an integer in ``1..100``; the
-                message names the offending value.
+        ``beam_width`` (default 10) must be an int in ``1..100``, validated here
+        (raises ``ConfigError``). ``lexicon`` and ``score_fn`` are optional.
         """
         self.beam_width = _validate_beam_width(beam_width)
         self.lexicon = lexicon
         self.score_fn = score_fn
 
     def decode(self, probs: np.ndarray, charset: "Charset") -> tuple[str, float]:
-        """Beam-search decode one image's CTC output to ``(text, confidence)``.
+        """Beam-search decode one image's CTC logits to ``(text, confidence)``.
 
-        Input handling matches :class:`GreedyDecoder`: ``probs`` are the model
-        output **logits** of shape ``(T, NUM_CLASSES)`` or ``(1, T, NUM_CLASSES)``
-        (a leading batch dim of 1 is squeezed); a stable softmax is applied over
-        the class axis to obtain per-timestep probabilities.
+        Input handling matches :class:`GreedyDecoder` (logits, optional leading
+        batch dim of 1, internal softmax).
 
-        Lexicon-constraint policy (Req 7.5, Property 7): if a non-empty lexicon
-        is configured, the final beams are filtered to those whose decoded
-        string is a lexicon member (the empty string is always allowed) and the
-        best surviving candidate is returned. If no beam's string is in the
-        lexicon, the empty string is returned. This guarantees the invariant
-        "any non-empty beam-search output is a member of the lexicon."
+        Lexicon: when a non-empty lexicon is set, the final beams are filtered to
+        lexicon members (empty string always allowed) and the best is returned;
+        if none match, the empty string is returned — so any non-empty output is
+        always a lexicon member.
 
-        Ranking / tie-break (Req 7.6, Property 9): the final candidate ranking
-        key is, in descending priority, ``(score_fn(prefix), ctc_prob)`` compared
-        lexicographically when a ``score_fn`` is set, else just ``ctc_prob``.
-        Because ``ctc_prob`` is the secondary key, equal ``score_fn`` scores are
-        broken by preferring the higher accumulated CTC probability. ``ctc_prob``
-        is a beam's total probability ``p_blank + p_non_blank``.
+        Ranking: ``(score_fn(prefix), ctc_prob)`` when a score_fn is set (equal
+        scores broken by higher CTC prob), else ``ctc_prob`` alone, where
+        ``ctc_prob = p_blank + p_non_blank``.
 
-        Confidence (Design Decision D2, Req 1.4): the winning path's
-        length-normalized probability ``ctc_prob ** (1 / len(text))`` for
-        non-empty ``text`` — the geometric mean of per-character probability
-        mass, which lies in ``[0, 1]`` since ``ctc_prob`` does. Empty output ->
-        ``0.0``.
+        Confidence: the winning path's length-normalized probability
+        ``ctc_prob ** (1 / len(text))`` (geometric mean, in ``[0, 1]``); ``0.0``
+        for empty output.
 
-        Args:
-            probs: Model output logits, shape ``(T, NUM_CLASSES)`` or
-                ``(1, T, NUM_CLASSES)``.
-            charset: The recognition :class:`~olchiki_ocr.charset.Charset`.
-
-        Returns:
-            A ``(text, confidence)`` tuple.
-
-        Raises:
-            ValueError: If the input is not 2-D after squeezing a leading batch
-                dim of 1, or its class dimension is not ``NUM_CLASSES``.
+        Raises ``ValueError`` if not 2-D (after squeezing) or the class dim isn't
+        ``NUM_CLASSES``.
         """
         scores = np.asarray(probs)
 
@@ -308,22 +202,16 @@ class BeamSearchDecoder:
 
         probabilities = _softmax(scores.astype(np.float64))
 
-        # Trivial configuration reduces to greedy best-path decoding
-        # (Property 6): with a single beam and no lexicon/score_fn there is no
-        # candidate ranking to perform, so the correct and cheapest behavior is
-        # the canonical CTC best-path decode (argmax -> collapse dups -> drop
-        # blank), which is exactly what GreedyDecoder produces. Prefix beam
-        # search with width 1 sums probability mass over paths and is a
-        # genuinely different algorithm that need not agree with best-path, so
-        # we delegate rather than approximate.
+        # Trivial config: with one beam and no lexicon/score_fn there's nothing
+        # to rank, so delegate to greedy best-path. (Width-1 prefix beam search
+        # sums mass over paths and need not agree with best-path.)
         if self.beam_width == 1 and self.lexicon is None and self.score_fn is None:
             return self._greedy_best_path(probabilities, charset)
 
         beams = self._run_prefix_beam_search(probabilities)
 
-        # Convert each surviving prefix (tuple of emit-class indices) to text and
-        # its total CTC probability, then select the winner under the configured
-        # policy.
+        # Convert each surviving prefix to (text, total CTC prob), then pick the
+        # winner under the configured policy.
         candidates: list[tuple[str, float]] = []
         for prefix, (p_blank, p_non_blank) in beams.items():
             total = p_blank + p_non_blank
@@ -349,22 +237,11 @@ class BeamSearchDecoder:
     def _greedy_best_path(
         self, probabilities: np.ndarray, charset: "Charset"
     ) -> tuple[str, float]:
-        """Best-path (greedy) decode used for the trivial beam configuration.
+        """Best-path (greedy) decode used for the trivial beam config.
 
-        Produces exactly the :class:`GreedyDecoder` text (argmax per timestep,
-        collapse consecutive duplicates, drop the blank) so Property 6 holds.
-        The confidence follows the beam's length-normalized-probability
-        convention (Design Decision D2): the geometric mean over the emitted
-        timesteps of the per-timestep max softmax probability. This equals the
-        winning best-path probability ``prod(emitted max-probs)`` raised to
-        ``1/len(text)``, which lies in ``[0, 1]``. Empty output -> ``0.0``.
-
-        Args:
-            probabilities: Per-timestep class probabilities, shape ``(T, C)``.
-            charset: The recognition Charset.
-
-        Returns:
-            The ``(text, confidence)`` best-path result.
+        Produces the same text as :class:`GreedyDecoder`, but with the beam's
+        length-normalized confidence (geometric mean of emitted max-softmax
+        probs, in ``[0, 1]``; ``0.0`` for empty output).
         """
         best_indices = np.argmax(probabilities, axis=1)
         best_probs = probabilities[np.arange(probabilities.shape[0]), best_indices]
@@ -384,8 +261,7 @@ class BeamSearchDecoder:
         if not text:
             return "", 0.0
 
-        # Geometric mean of emitted per-timestep max probs = length-normalized
-        # path probability in [0, 1].
+        # Geometric mean of emitted max probs = length-normalized path prob.
         log_sum = float(np.sum(np.log(emitted_probs)))
         confidence = float(np.exp(log_sum / len(text)))
         if confidence < 0.0:
@@ -399,17 +275,10 @@ class BeamSearchDecoder:
     ) -> "dict[tuple[int, ...], tuple[float, float]]":
         """Run CTC prefix beam search, returning surviving beams.
 
-        Each beam is keyed by its prefix as a tuple of **emit-class** indices
-        (the model class index, 1..48; the blank is never part of a prefix). The
-        value is ``(p_blank, p_non_blank)``: the probability that the prefix ends
-        in a blank vs. a non-blank at the current timestep. Only the top
-        ``beam_width`` beams by total probability survive each timestep.
-
-        Args:
-            probabilities: Per-timestep class probabilities, shape ``(T, C)``.
-
-        Returns:
-            A mapping ``prefix -> (p_blank, p_non_blank)`` for surviving beams.
+        Beams are keyed by prefix (a tuple of emit-class indices; the blank is
+        never in a prefix) with value ``(p_blank, p_non_blank)`` — the prob the
+        prefix ends in blank vs. non-blank. Only the top ``beam_width`` by total
+        prob survive each timestep.
         """
         # Empty prefix starts with all probability mass in the blank state.
         beams: dict[tuple[int, ...], tuple[float, float]] = {(): (1.0, 0.0)}
@@ -431,14 +300,13 @@ class BeamSearchDecoder:
             for prefix, (p_blank, p_non_blank) in beams.items():
                 prefix_total = p_blank + p_non_blank
 
-                # Case 1: emit a blank -> prefix unchanged, lands in blank state.
+                # Case 1: emit a blank -> prefix unchanged, blank state.
                 slot = _slot(prefix)
                 slot[0] += prefix_total * blank_p
 
                 # Case 2: repeat the last char -> prefix unchanged, non-blank
-                # state. A repeat can only extend from the previous non-blank
-                # mass (p_non_blank); extending from p_blank would create a NEW
-                # occurrence (handled in case 3).
+                # state. Only p_non_blank can extend a repeat; extending from
+                # p_blank would be a NEW occurrence (case 3).
                 if prefix:
                     last = prefix[-1]
                     slot[1] += p_non_blank * float(step[last])
@@ -449,8 +317,8 @@ class BeamSearchDecoder:
                     if char_p == 0.0:
                         continue
                     if prefix and prefix[-1] == cls:
-                        # Same char as last: only the blank-ending mass can start
-                        # a new occurrence (non-blank-ending mass would collapse).
+                        # Same char as last: only blank-ending mass starts a new
+                        # occurrence (non-blank mass would collapse).
                         added = p_blank * char_p
                     else:
                         added = prefix_total * char_p
@@ -474,18 +342,10 @@ class BeamSearchDecoder:
         return beams
 
     def _select_winner(self, candidates: list[tuple[str, float]]) -> tuple[str, float]:
-        """Pick the winning ``(text, ctc_prob)`` under lexicon + score_fn policy.
+        """Pick the winning ``(text, ctc_prob)`` under the lexicon + score_fn policy.
 
-        Applies the lexicon filter (Req 7.5) then ranks by
-        ``(score_fn(text), ctc_prob)`` (Req 7.6). See :meth:`decode` for the
-        exact documented policy.
-
-        Args:
-            candidates: ``(text, ctc_prob)`` pairs for the surviving beams.
-
-        Returns:
-            The winning ``(text, ctc_prob)``; ``("", 0.0)`` if no candidate
-            survives the lexicon filter with a non-empty string.
+        Applies the lexicon filter then ranks by ``(score_fn(text), ctc_prob)``.
+        See :meth:`decode` for the exact policy.
         """
         if not candidates:
             return "", 0.0

@@ -1,13 +1,5 @@
-"""Run-statistics accumulator for the ``[train]`` tier.
-
-Defines the mutable :class:`RunStats` dataclass that accumulates counters,
-metrics, and provenance for the Run_Report as a fine-tuning run executes.
-
-This lived on the carried-over ``errors`` module in the old package. In the new
-package the core :mod:`olchiki_ocr.errors` is kept lean (typed errors only, so
-it stays a pure-stdlib eager import for the torch-free core), and this
-training-only accumulator lives here in the ``[train]`` tier instead.
-"""
+"""Mutable ``RunStats`` accumulator: counters, metrics, and provenance the
+Run_Report consumes as a fine-tuning run executes."""
 
 from __future__ import annotations
 
@@ -18,12 +10,10 @@ __all__ = ["RunStats"]
 
 @dataclass
 class RunStats:
-    """Mutable accumulator of counters, metrics, and provenance for a run.
+    """Mutable run accumulator consumed by the Run_Report writer.
 
-    Populated as the workflow executes and consumed by the Run_Report writer.
-    ``skipped_labels`` records non-fatal generation issues as ``(label,
-    font_path)`` pairs. ``config_snapshot`` and ``charset_snapshot`` capture the
-    applied Configuration and the ordered Charset for reproducibility.
+    ``skipped_labels`` holds ``(label, font_path)`` pairs; ``config_snapshot``
+    and ``charset_snapshot`` capture provenance for reproducibility.
     """
 
     dataset_sample_count: int = 0

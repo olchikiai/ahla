@@ -1,40 +1,13 @@
-"""``[train]`` tier for ``olchiki_ocr``: the DTRB fine-tune pipeline.
+"""``[train]`` tier: the DTRB fine-tune pipeline.
 
-This subpackage contains the synthetic-data-generation and fine-tuning code
-(``synthgen``, ``partition``, ``lmdbbuilder``, ``trainer``, ``evaluator``,
-``runreport``, ``config``, ``device``, and the ``orchestrator`` that wires them
-together). It reuses the carried-over ``_training/`` pipeline and shells out to a
-pinned external DTRB clone (commit
-``e2117f2fb882b3c6085030500a260c113be27a63``) to run training. It produces the
-trained Base_Weights ``.pth`` (Req 10.4).
+Bundles the synthetic-data and fine-tuning code and shells out to a pinned DTRB
+clone to produce the trained Base_Weights ``.pth``.
 
-``[train]`` extra gating (Req 3.8)
-----------------------------------
-The training pipeline depends on ``torch``, ``lmdb`` (via the shelled-out DTRB
-scripts / the LMDB datasets), and ``fontTools`` + ``Pillow`` (synthetic-image
-rendering). These are provided ONLY by the ``[train]`` extra and are NOT core
-dependencies. Two invariants keep the torch-free core clean:
-
-1. **The core never imports this subpackage.** ``import olchiki_ocr`` must not
-   import ``olchiki_ocr._train`` (its ``__init__`` from Task 14.1 does not, and
-   this module is only reached by an explicit ``import olchiki_ocr._train`` or an
-   attribute access on it). So a bare core import stays torch-free.
-
-2. **This ``__init__`` imports nothing heavy at module load.** Importing
-   ``olchiki_ocr._train`` itself does NOT import torch/lmdb/fontTools — the heavy
-   submodules (``orchestrator`` -> ``device``/``synthgen``/``trainer``) are
-   imported *lazily* on first attribute access via PEP 562 ``__getattr__``. This
-   keeps ``import olchiki_ocr._train`` cheap and lets :func:`require_train` run
-   its dependency check first.
-
-When a training entry point is invoked without the ``[train]`` extra installed,
-the lazy import of a heavy submodule raises ``ModuleNotFoundError`` for the
-missing dependency. :func:`require_train` catches that and re-raises a clear
-:class:`~olchiki_ocr.errors.ConfigError` naming the missing ``[train]`` extra
-(mirroring the ``[cv]`` guard used by preprocessing). The public ``run*`` entry
-points call :func:`require_train` first, so invoking training without ``[train]``
-always fails with an actionable, extra-naming error rather than a raw import
-error.
+Importing this subpackage stays light: the heavy submodules (torch/lmdb/
+fontTools/PIL) are imported lazily on first access, so the torch-free core never
+pulls them in. The public ``run*`` entry points call :func:`require_train`
+first, which checks the ``[train]`` deps and raises a ``ConfigError`` naming the
+``[train]`` extra when one is missing.
 """
 
 from __future__ import annotations
@@ -51,28 +24,15 @@ __all__ = [
     "validate_config",
 ]
 
-# The heavy third-party modules the ``[train]`` extra provides. Presence of all
-# of these is what distinguishes a ``[train]``-installed environment.
+# The heavy deps the ``[train]`` extra provides.
 _TRAIN_DEPENDENCIES = ("torch", "lmdb", "fontTools", "PIL")
 
 
 def require_train() -> None:
-    """Ensure the ``[train]`` extra's heavy dependencies are importable (Req 3.8).
+    """Check the ``[train]`` deps are importable, else raise ConfigError.
 
-    Attempts to import each dependency the training pipeline needs (torch, lmdb,
-    fontTools, Pillow). If any is missing, raises a
-    :class:`~olchiki_ocr.errors.ConfigError` whose message names the ``[train]``
-    extra (and the specific missing module) so the user knows exactly what to
-    install::
-
-        pip install "olchiki-ocr[train]"
-
-    This mirrors the ``[cv]`` extra guard used by the preprocessing pipeline: a
-    clear, extra-naming error rather than a raw ``ModuleNotFoundError``.
-
-    Raises:
-        ConfigError: naming the ``[train]`` extra when a required dependency is
-            not importable.
+    Tries to import each of torch/lmdb/fontTools/PIL; a missing one raises a
+    :class:`~olchiki_ocr.errors.ConfigError` naming the ``[train]`` extra.
     """
     import importlib
 
@@ -112,20 +72,13 @@ def run_training(cfg):
     return _run_training(cfg)
 
 
-# Names resolved lazily via PEP 562 so importing this subpackage stays cheap and
-# torch-free until the heavy pipeline is actually used. ``Config``/
-# ``validate_config``/``low_resource_config`` come from the pure-stdlib
-# ``.config`` module (safe to import), but are exposed here lazily too for a
-# uniform surface.
+# Config exports resolved lazily (PEP 562) for a uniform surface. ``.config`` is
+# pure stdlib, so this stays torch-free.
 _LAZY_CONFIG_EXPORTS = frozenset({"Config", "validate_config", "low_resource_config"})
 
 
 def __getattr__(name: str):
-    """Lazily resolve config exports on first access (PEP 562).
-
-    ``.config`` is pure stdlib, so this never triggers a heavy import; the heavy
-    pipeline submodules are only imported inside the guarded ``run*`` wrappers.
-    """
+    """Lazily resolve config exports on first access (PEP 562)."""
     if name in _LAZY_CONFIG_EXPORTS:
         from . import config
 
