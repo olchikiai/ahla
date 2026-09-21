@@ -7,8 +7,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "olchiki-ocr"
 # Package version, independent of the model version (recorded in provenance.json).
-version = "0.1.0"
-description = "Ol Chiki (Santali) OCR: recognize Ol Chiki text from word or line images with an ONNX Runtime core (torch-free), plus optional GPU, OpenCV, training, and export tiers."
+version = "0.2.0"
+description = "Ol Chiki (Santali) OCR: read a whole scanned document or a single word/line image with an ONNX Runtime core (torch-free), plus optional document segmentation, GPU, OpenCV, training, and export tiers."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.9"
 # Code is MIT; the model weights/ONNX are Apache-2.0 (see LICENSE-MODEL, NOTICE).
@@ -42,6 +42,11 @@ gpu = [
     "onnxruntime-gpu>=1.16",
 ]
 cv = [
+    "opencv-python>=4.8",
+]
+# Document segmentation depends on OpenCV; aliases the same wheel as [cv],
+# with the version pin kept aligned with [cv].
+segmentation = [
     "opencv-python>=4.8",
 ]
 # DTRB is not a pip dep; it's a pinned external git clone the trainer shells out to.
