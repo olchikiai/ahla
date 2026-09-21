@@ -29,7 +29,7 @@ from .errors import (
     PretrainedModelError,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     # Lazily-resolved recognition surface (PEP 562 __getattr__).
